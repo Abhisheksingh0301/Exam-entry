@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %></title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/stylesheets/tailwind.css" />
+</head>
+<body class="m-0 bg-[#eef1f6] text-[#1f2733]">
+  <header class="flex justify-between items-center gap-4 flex-wrap bg-[#1f3a5f] text-white px-[22px] py-[14px]">
+    <div>
+      <h1 class="text-[1.15rem] font-semibold m-0">Group-count Changes</h1>
+      <div class="text-[.8rem] opacity-90 mt-[3px]">Audit log of "No. of groups" overrides &mdash; applied to Script_per_candidate on export.</div>
+    </div>
+    <a href="/" class="border-0 rounded-md px-[14px] py-[9px] text-[.85rem] font-semibold cursor-pointer transition hover:brightness-110 bg-white/15 text-white no-underline">&larr; Back to entry</a>
+  </header>
+
+  <main class="px-[22px] py-[18px]">
+    <section class="bg-white rounded-[10px] px-5 py-[18px] shadow-[0_1px_4px_rgba(0,0,0,0.08)]">
+      <% if (changes.length === 0) { %>
+        <p class="text-slate-400 text-center py-4 m-0">No group-count changes recorded yet.</p>
+      <% } else { %>
+      <div class="overflow-x-auto">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Subject</th><th>Old</th><th>New</th><th>Status</th><th>Changed at</th><th>Exported at</th><th></th></tr>
+          </thead>
+          <tbody>
+            <% changes.forEach(function(c, i){ %>
+              <tr>
+                <td><%= i + 1 %></td>
+                <td><%= c.subcode %></td>
+                <td><%= c.old_groups %></td>
+                <td class="font-semibold"><%= c.new_groups %></td>
+                <td><% if (c.exported) { %><span class="tag ok">applied</span><% } else { %><span class="tag pend">pending</span><% } %></td>
+                <td><%= c.created_at %></td>
+                <td><%= c.exported_at || '—' %></td>
+                <% var cmsg = c.exported ? 'Delete this history record? The value already applied to Script_per_candidate stays.' : 'Delete this pending change? It will NOT be applied on export.'; %>
+                <td class="actions-cell">
+                  <form method="post" action="/changes/<%= c.id %>/delete" class="m-0" onsubmit="return confirm('<%= cmsg %>');">
+                    <button class="del" type="submit" title="delete">&times;</button>
+                  </form>
+                </td>
+              </tr>
+            <% }); %>
+          </tbody>
+        </table>
+      </div>
+      <% } %>
+    </section>
+  </main>
+</body>
+</html>

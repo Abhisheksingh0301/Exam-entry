@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %></title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/stylesheets/tailwind.css" />
+</head>
+<%
+  // Reusable Tailwind class strings (keeps the markup DRY).
+  var btn        = 'border-0 rounded-md px-[14px] py-[9px] text-[.85rem] font-semibold cursor-pointer transition hover:brightness-110';
+  var btnPrimary = btn + ' bg-[#2e7d32] text-white';
+  var btnGhost   = btn + ' bg-white/15 text-white';
+  var fld        = 'mb-3 flex flex-col min-w-0';
+  var lbl        = 'text-[.78rem] font-semibold mb-1 text-[#3a4658]';
+  var hint       = 'font-normal text-[#2e7d32]';
+  var inp        = 'w-full px-[10px] py-[9px] border border-[#c7d0dc] rounded-md text-[.95rem] focus:outline-2 focus:outline-[#2e7d32] focus:border-[#2e7d32]';
+  var inpWhite   = inp + ' bg-white';
+  var cardCls    = 'bg-white rounded-[10px] px-5 py-[18px] shadow-[0_1px_4px_rgba(0,0,0,0.08)]';
+  var h2Cls      = 'mt-0 mb-[14px] text-base font-semibold text-[#1f3a5f] flex justify-between items-baseline';
+%>
+<body class="m-0 bg-[#eef1f6] text-[#1f2733]">
+  <header class="flex justify-between items-center gap-4 flex-wrap bg-[#1f3a5f] text-white px-[22px] py-[14px]">
+    <div>
+      <h1 class="text-[1.15rem] font-semibold m-0">Answer Script &mdash; Packet Entry</h1>
+      <div class="text-[.8rem] opacity-90 mt-[3px]">
+        Session: <strong><%= session || 'not set' %></strong>
+        &nbsp;|&nbsp; Subjects loaded: <strong><%= subjects.length %></strong>
+        &nbsp;|&nbsp; Total records: <strong id="stTotalTop"><%= stats.total %></strong>
+        <% if (lastSync) { %>&nbsp;|&nbsp; Last sync: <span class="opacity-70"><%= new Date(lastSync).toLocaleString() %></span><% } %>
+      </div>
+    </div>
+    <div class="flex gap-[10px]">
+      <a href="/changes" class="<%= btnGhost %> no-underline">Changes</a>
+      <form method="post" action="/sync" class="m-0"><button class="<%= btnGhost %>" type="submit">Sync Master Data</button></form>
+      <form method="post" action="/export" class="m-0" onsubmit="return confirm('Export pending packets and group changes to SQL Server?');">
+        <button id="exportBtn" class="<%= btnPrimary %> disabled:bg-[#93b795] disabled:cursor-not-allowed disabled:hover:brightness-100" type="submit" <%= (stats.pending + stats.pendingChanges) ? '' : 'disabled' %>>Export to SQL Server (<%= stats.pending %> pkt<% if (stats.pendingChanges) { %>, <%= stats.pendingChanges %> chg<% } %>)</button>
+      </form>
+    </div>
+  </header>
+
+  <% if (flash) { var fc = flashType === 'success' ? 'bg-[#e4f6e6] text-[#1e6b26]' : flashType === 'error' ? 'bg-[#fbe6e6] text-[#9a2626]' : 'bg-[#e7f0fb] text-[#24476f]'; %>
+    <div class="mx-[22px] mt-3.5 px-3.5 py-2.5 rounded-md text-[.88rem] <%= fc %>"><%= flash %></div>
+  <% } %>
+
+  <% if (subjects.length === 0) { %>
+    <div class="mx-5.5 mt-[14px] px-[14px] py-[10px] rounded-md text-[.88rem] bg-[#e7f0fb] text-[#24476f]">No master data yet. Click <strong>Sync Master Data</strong> to load subjects from SQL Server (<code>Exam</code> DB).</div>
+  <% } %>
+
+  <main class="grid grid-cols-[380px_1fr] max-[860px]:grid-cols-1 gap-[18px] px-[22px] py-[18px] items-start">
+    <!-- Entry form -->
+    <section class="<%= cardCls %>">
+      <h2 class="<%= h2Cls %>">New Packet</h2>
+      <form id="entryForm" autocomplete="off">
+        <% var _t = new Date(); var todayStr = _t.getFullYear() + '-' + String(_t.getMonth() + 1).padStart(2, '0') + '-' + String(_t.getDate()).padStart(2, '0'); %>
+        <div class="<%= fld %>">
+          <label for="doe" class="<%= lbl %>">Date of exam <span class="<%= hint %>">(filters subjects by exam day)</span></label>
+          <div class="flex items-center gap-[10px]">
+            <input id="doe" name="doe" type="date" value="<%= todayStr %>" class="<%= inpWhite %> flex-1" />
+            <a href="#" id="todayLink" class="text-[.8rem] text-[#2e7d32] no-underline font-semibold whitespace-nowrap hover:underline">Today</a>
+          </div>
+        </div>
+
+        <div class="<%= fld %> autocomplete relative">
+          <label for="subcode" class="<%= lbl %>">Subject <span class="<%= hint %>">(type 3+ characters)</span></label>
+          <input id="subcode" name="subcode" type="text" autocomplete="off"
+                 placeholder="type subject code..." required class="<%= inpWhite %>" />
+          <ul id="subSuggest" class="suggest" hidden></ul>
+        </div>
+
+        <div class="<%= fld %>">
+          <label for="dept" class="<%= lbl %>">Dept</label>
+          <input id="dept" name="dept" type="text" readonly placeholder="Dept" class="<%= inp %> bg-[#f1f4f8] text-[#55606f]" />
+        </div>
+
+        <div class="flex gap-3">
+          <div class="<%= fld %> flex-1">
+            <label for="groups" class="<%= lbl %>">No. of groups</label>
+            <select id="groups" name="groups" required class="<%= inpWhite %>">
+              <% for (var g = 1; g <= maxGroups; g++) { %>
+                <option value="<%= g %>"><%= g %><%= g === 1 ? ' (NONE)' : ' (' + 'ABCDEFGHIJ'.slice(0, g).split('').join(',') + ')' %></option>
+              <% } %>
+            </select>
+          </div>
+          <div class="<%= fld %> flex-1">
+            <label for="paper_type" class="<%= lbl %>">Type</label>
+            <select id="paper_type" name="paper_type" required class="<%= inpWhite %>">
+              <% paperTypes.forEach(function(t){ %><option value="<%= t %>"><%= t %></option><% }); %>
+            </select>
+          </div>
+        </div>
+
+        <div class="flex gap-3">
+          <div class="<%= fld %> flex-1">
+            <label for="pkt_no" class="<%= lbl %>">Pkt No.</label>
+            <input id="pkt_no" name="pkt_no" type="number" min="1" value="1" class="<%= inpWhite %>" />
+          </div>
+          <div class="<%= fld %> flex-1">
+            <label for="no_of_scripts" class="<%= lbl %>">No. of scripts <span class="<%= hint %>">(Enter to save)</span></label>
+            <input id="no_of_scripts" name="no_of_scripts" type="number" min="1" placeholder="e.g. 25" class="<%= inpWhite %> font-bold text-[1.05rem]" />
+          </div>
+        </div>
+
+        <button type="button" id="saveBtn" class="<%= btnPrimary %> w-full mt-1 py-[11px] text-[.95rem]">Save Packet</button>
+        <p id="entryMsg" class="entry-msg"></p>
+      </form>
+    </section>
+
+    <!-- Recent entries -->
+    <section class="<%= cardCls %>">
+      <h2 id="listTitle" class="<%= h2Cls %>">Recent Entries
+        <span class="text-[.75rem] font-normal text-slate-500">
+          total <b class="text-[#1f3a5f]" id="stTotal"><%= stats.total %></b> &middot;
+          pending <b class="text-[#1f3a5f]" id="stPending"><%= stats.pending %></b> &middot;
+          scripts <b class="text-[#1f3a5f]" id="stScripts"><%= stats.scripts %></b>
+        </span>
+      </h2>
+      <div class="flex gap-2 mb-3">
+        <input id="pktSearch" type="text" placeholder="Search saved packets by subject code..." autocomplete="off" class="<%= inpWhite %> flex-1" />
+        <button id="pktSearchClear" class="<%= btn %> bg-slate-500 text-white px-3 py-2" type="button" hidden>Clear</button>
+      </div>
+      <div class="overflow-x-auto">
+        <table id="recentTable">
+          <thead>
+            <tr><th>#</th><th>Subject</th><th>Dept</th><th>Grp</th><th>Type</th><th>Pkt</th><th>Scripts</th><th></th><th></th></tr>
+          </thead>
+          <tbody>
+            <% recent.forEach(function(r, i){ %>
+              <tr data-id="<%= r.id %>">
+                <td class="sno"><%= i + 1 %></td>
+                <td><%= r.subcode %></td>
+                <td><%= r.dept %></td>
+                <td><%= r.groups %></td>
+                <td><%= r.paper_type %></td>
+                <td><%= r.pkt_no %></td>
+                <td><%= r.no_of_scripts %></td>
+                <td><% if (r.exported) { %><span class="tag ok">exported</span><% } else { %><span class="tag pend">pending</span><% } %></td>
+                <td class="actions-cell">
+                  <button class="edit" data-id="<%= r.id %>" title="edit no. of scripts">&#9998;</button>
+                  <button class="del" data-id="<%= r.id %>" data-exported="<%= r.exported ? 1 : 0 %>" title="delete">&times;</button>
+                </td>
+              </tr>
+            <% }); %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/javascripts/main.js"></script>
+</body>
+</html>

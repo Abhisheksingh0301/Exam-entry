@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ *
+ * The layout / form / buttons are styled with inline Tailwind utility
+ * classes in views/index.ejs. This file keeps only the few classes that
+ * are shared with client-generated HTML (table rows, autocomplete list,
+ * status tags, row buttons) plus the flash-row keyframe.
+ * ------------------------------------------------------------------ */
+
+/* Subject autocomplete dropdown (list items are built in main.js) */
+.suggest { @apply absolute top-full inset-x-0 z-30 mt-0.5 p-0 list-none bg-white border border-[#c7d0dc] rounded-md max-h-57.5 overflow-y-auto; box-shadow: 0 6px 16px rgba(0, 0, 0, .14); }
+.suggest li { @apply px-[10px] py-2 cursor-pointer text-[.9rem] flex justify-between items-baseline gap-[10px]; }
+.suggest li span { @apply font-semibold; }
+.suggest li small { @apply text-slate-500 whitespace-nowrap; }
+.suggest li.active, .suggest li:hover { @apply bg-[#eef4ff]; }
+.suggest li.none { @apply text-slate-400 cursor-default justify-center; }
+
+/* Entry status message (main.js sets .ok / .err) */
+.entry-msg { @apply min-h-[20px] text-[.85rem] mt-[6px]; }
+.entry-msg.ok { @apply text-[#1e6b26]; }
+.entry-msg.err { @apply text-[#9a2626]; }
+
+/* Entries table (rows are rendered both server-side and in main.js) */
+td.empty { @apply text-center text-slate-400 p-4; }
+table { @apply w-full border-collapse text-[.82rem]; }
+th, td { @apply text-left px-2 py-[7px] border-b border-[#eef1f6] whitespace-nowrap; }
+th { @apply text-slate-500 font-semibold; }
+tr.flash-row { animation: hl 1s ease; }
+@keyframes hl { from { background: #fff6cc; } to { background: transparent; } }
+
+/* Status tags + row action buttons (built in main.js) */
+.tag { @apply text-[.68rem] px-1.75 py-[2px] rounded-[10px]; }
+.tag.ok { @apply bg-[#e4f6e6] text-[#1e6b26]; }
+.tag.pend { @apply bg-[#fff1d6] text-[#8a5a00]; }
+.actions-cell { @apply whitespace-nowrap; }
+.edit { @apply border-0 bg-[#e7f0fb] text-[#24476f] rounded-sm cursor-pointer px-[7px] py-[1px] text-[.85rem] mr-1; }
+.del { @apply border-0 bg-[#fbe6e6] text-[#9a2626] rounded-sm cursor-pointer px-[7px] py-[1px] text-[.9rem]; }
