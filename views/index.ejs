@@ -9,29 +9,29 @@
 </head>
 <%
   // Reusable Tailwind class strings (keeps the markup DRY).
-  var btn        = 'border-0 rounded-md px-[14px] py-[9px] text-[.85rem] font-semibold cursor-pointer transition hover:brightness-110';
+  var btn        = 'border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer transition hover:brightness-110';
   var btnPrimary = btn + ' bg-[#2e7d32] text-white';
   var btnGhost   = btn + ' bg-white/15 text-white';
   var fld        = 'mb-3 flex flex-col min-w-0';
   var lbl        = 'text-[.78rem] font-semibold mb-1 text-[#3a4658]';
   var hint       = 'font-normal text-[#2e7d32]';
-  var inp        = 'w-full px-[10px] py-[9px] border border-[#c7d0dc] rounded-md text-[.95rem] focus:outline-2 focus:outline-[#2e7d32] focus:border-[#2e7d32]';
+  var inp        = 'w-full px-2.5 py-2.25 border border-[#c7d0dc] rounded-md text-[.95rem] focus:outline-2 focus:outline-[#2e7d32] focus:border-[#2e7d32]';
   var inpWhite   = inp + ' bg-white';
-  var cardCls    = 'bg-white rounded-[10px] px-5 py-[18px] shadow-[0_1px_4px_rgba(0,0,0,0.08)]';
-  var h2Cls      = 'mt-0 mb-[14px] text-base font-semibold text-[#1f3a5f] flex justify-between items-baseline';
+  var cardCls    = 'bg-white rounded-[10px] px-5 py-4.5 shadow-[0_1px_4px_rgba(0,0,0,0.08)]';
+  var h2Cls      = 'mt-0 mb-3.5 text-base font-semibold text-[#1f3a5f] flex justify-between items-baseline';
 %>
 <body class="m-0 bg-[#eef1f6] text-[#1f2733]">
-  <header class="flex justify-between items-center gap-4 flex-wrap bg-[#1f3a5f] text-white px-[22px] py-[14px]">
+  <header class="flex justify-between items-center gap-4 flex-wrap bg-[#1f3a5f] text-white px-5.5 py-3.5">
     <div>
       <h1 class="text-[1.15rem] font-semibold m-0">Answer Script &mdash; Packet Entry</h1>
-      <div class="text-[.8rem] opacity-90 mt-[3px]">
+      <div class="text-[.8rem] opacity-90 mt-0.75">
         Session: <strong><%= session || 'not set' %></strong>
         &nbsp;|&nbsp; Subjects loaded: <strong><%= subjects.length %></strong>
         &nbsp;|&nbsp; Total records: <strong id="stTotalTop"><%= stats.total %></strong>
         <% if (lastSync) { %>&nbsp;|&nbsp; Last sync: <span class="opacity-70"><%= new Date(lastSync).toLocaleString() %></span><% } %>
       </div>
     </div>
-    <div class="flex gap-[10px]">
+    <div class="flex gap-2.5">
       <a href="/changes" class="<%= btnGhost %> no-underline">Changes</a>
       <form method="post" action="/sync" class="m-0"><button class="<%= btnGhost %>" type="submit">Sync Master Data</button></form>
       <form method="post" action="/export" class="m-0" onsubmit="return confirm('Export pending packets and group changes to SQL Server?');">
@@ -41,14 +41,14 @@
   </header>
 
   <% if (flash) { var fc = flashType === 'success' ? 'bg-[#e4f6e6] text-[#1e6b26]' : flashType === 'error' ? 'bg-[#fbe6e6] text-[#9a2626]' : 'bg-[#e7f0fb] text-[#24476f]'; %>
-    <div class="mx-[22px] mt-3.5 px-3.5 py-2.5 rounded-md text-[.88rem] <%= fc %>"><%= flash %></div>
+    <div class="mx-5.5 mt-3.5 px-3.5 py-2.5 rounded-md text-[.88rem] <%= fc %>"><%= flash %></div>
   <% } %>
 
   <% if (subjects.length === 0) { %>
-    <div class="mx-5.5 mt-[14px] px-[14px] py-[10px] rounded-md text-[.88rem] bg-[#e7f0fb] text-[#24476f]">No master data yet. Click <strong>Sync Master Data</strong> to load subjects from SQL Server (<code>Exam</code> DB).</div>
+    <div class="mx-5.5 mt-3.5 px-3.5 py-2.5 rounded-md text-[.88rem] bg-[#e7f0fb] text-[#24476f]">No master data yet. Click <strong>Sync Master Data</strong> to load subjects from SQL Server (<code>Exam</code> DB).</div>
   <% } %>
 
-  <main class="grid grid-cols-[380px_1fr] max-[860px]:grid-cols-1 gap-[18px] px-[22px] py-[18px] items-start">
+  <main class="grid grid-cols-[380px_1fr] max-[860px]:grid-cols-1 gap-4.5 px-5.5 py-4.5 items-start">
     <!-- Entry form -->
     <section class="<%= cardCls %>">
       <h2 class="<%= h2Cls %>">New Packet</h2>
@@ -56,7 +56,7 @@
         <% var _t = new Date(); var todayStr = _t.getFullYear() + '-' + String(_t.getMonth() + 1).padStart(2, '0') + '-' + String(_t.getDate()).padStart(2, '0'); %>
         <div class="<%= fld %>">
           <label for="doe" class="<%= lbl %>">Date of exam <span class="<%= hint %>">(filters subjects by exam day)</span></label>
-          <div class="flex items-center gap-[10px]">
+          <div class="flex items-center gap-2.5">
             <input id="doe" name="doe" type="date" value="<%= todayStr %>" class="<%= inpWhite %> flex-1" />
             <a href="#" id="todayLink" class="text-[.8rem] text-[#2e7d32] no-underline font-semibold whitespace-nowrap hover:underline">Today</a>
           </div>
@@ -102,7 +102,7 @@
           </div>
         </div>
 
-        <button type="button" id="saveBtn" class="<%= btnPrimary %> w-full mt-1 py-[11px] text-[.95rem]">Save Packet</button>
+        <button type="button" id="saveBtn" class="<%= btnPrimary %> w-full mt-1 py-2.75 text-[.95rem]">Save Packet</button>
         <p id="entryMsg" class="entry-msg"></p>
       </form>
     </section>
