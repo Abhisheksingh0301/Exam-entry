@@ -32,6 +32,7 @@
       </div>
     </div>
     <div class="flex gap-2.5">
+      <a href="/qp" class="<%= btnGhost %> no-underline">QP Allotment</a>
       <a href="/changes" class="<%= btnGhost %> no-underline">Changes</a>
       <form method="post" action="/sync" class="m-0"><button class="<%= btnGhost %>" type="submit">Sync Master Data</button></form>
       <form method="post" action="/export" class="m-0" onsubmit="return confirm('Export pending packets and group changes to SQL Server?');">

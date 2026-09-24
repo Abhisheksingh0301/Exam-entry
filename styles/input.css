@@ -35,3 +35,53 @@ tr.flash-row { animation: hl 1s ease; }
 .actions-cell { @apply whitespace-nowrap; }
 .edit { @apply border-0 bg-[#e7f0fb] text-[#24476f] rounded-sm cursor-pointer px-[7px] py-[1px] text-[.85rem] mr-1; }
 .del { @apply border-0 bg-[#fbe6e6] text-[#9a2626] rounded-sm cursor-pointer px-[7px] py-[1px] text-[.9rem]; }
+
+/* ------------------------------------------------------------------ *
+ * QP allotment screen (rows + rail items are built in qp.js)
+ * ------------------------------------------------------------------ */
+
+/* Subject rail */
+.rail-item { @apply w-full flex items-center gap-2 text-left bg-transparent border-0 rounded-md px-2 py-1.5 cursor-pointer text-[.82rem] hover:bg-[#f1f4f8]; }
+.rail-item.active { @apply bg-[#e7f0fb]; }
+.rail-item small { @apply text-[.72rem] text-[#1f3a5f] font-semibold whitespace-nowrap; }
+
+/* Status dots: grey = nothing entered, amber = partial, green = balanced,
+   blue = over-allotted, dark green = finalised. */
+.dot { @apply w-2.5 h-2.5 rounded-full shrink-0 border; }
+.dot-empty { @apply bg-white border-[#c7d0dc]; }
+.dot-partial { @apply bg-[#f0ad2e] border-[#d1931c]; }
+.dot-done { @apply bg-[#4caf50] border-[#3c8c40]; }
+.dot-over { @apply bg-[#4a7fd1] border-[#3a63a4]; }
+.dot-final, .dot-exported { @apply bg-[#1e6b26] border-[#1e6b26]; }
+.dot-nocount { @apply bg-[#e4e8ee] border-[#c7d0dc]; }
+
+/* Chips in the context bar / footer */
+.chip { @apply px-2 py-[3px] rounded-[10px] whitespace-nowrap; }
+.chip-mute { @apply bg-[#f1f4f8] text-[#55606f]; }
+.chip-req { @apply bg-[#e7f0fb] text-[#24476f] font-semibold; }
+.chip-ok { @apply bg-[#e4f6e6] text-[#1e6b26] font-semibold; }
+.chip-short { @apply bg-[#fbe6e6] text-[#9a2626] font-semibold; }
+.chip-over { @apply bg-[#e8eefb] text-[#2d4f8f] font-semibold; }
+.chip-warn { @apply bg-[#fff1d6] text-[#8a5a00] font-semibold; }
+.chip-lock { @apply bg-[#e4f6e6] text-[#1e6b26] font-semibold; }
+.chip-dept { @apply bg-[#eae6f6] text-[#4a3b8f] font-semibold; }
+
+/* Room grid */
+.qp-table td { @apply py-1; }
+.qp-room { @apply w-full max-w-[220px] px-2 py-1 border border-transparent rounded bg-transparent text-[.85rem] hover:border-[#dde3ec] focus:outline-2 focus:outline-[#2e7d32] focus:bg-white; }
+.qp-qty { @apply w-20 px-2 py-1 border border-[#dde3ec] rounded bg-white text-right font-semibold text-[.9rem] tabular-nums focus:outline-2 focus:outline-[#2e7d32]; }
+.qp-max { @apply text-[.8rem] text-[#55606f] tabular-nums; }
+.qp-max.weak { @apply text-slate-300; }
+.qp-table tr.newrow td { @apply border-b-0 pt-2; }
+.qp-table tbody tr:hover { @apply bg-[#fafbfd]; }
+
+/* Pre-flight problems under the grid */
+.problem { @apply text-[.82rem] px-2.5 py-1.5 rounded-md mb-1.5; }
+.problem.error { @apply bg-[#fbe6e6] text-[#9a2626]; }
+.problem.warn { @apply bg-[#fff1d6] text-[#8a5a00]; }
+
+/* Date progress bars (Entry Progress page) */
+.bar { @apply relative h-2 w-full rounded-full bg-[#eef1f6] overflow-hidden; }
+.bar span { @apply absolute left-0 top-0 h-full rounded-full; }
+.bar-start { @apply bg-[#f0ad2e]; }
+.bar-final { @apply bg-[#4caf50]; }

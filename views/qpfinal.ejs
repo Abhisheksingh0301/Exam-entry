@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %></title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/stylesheets/tailwind.css" />
+</head>
+<body class="m-0 bg-[#eef1f6] text-[#1f2733]">
+  <header class="flex justify-between items-center gap-4 flex-wrap bg-[#1f3a5f] text-white px-5.5 py-3.5">
+    <div>
+      <h1 class="text-[1.15rem] font-semibold m-0">Finalised Allotment</h1>
+      <div class="text-[.8rem] opacity-90 mt-0.75">
+        Locked rows, column-for-column with <code>dbo.room</code>.
+        <% var pendRooms = pending.reduce(function (s, p) { return s + p.rooms; }, 0); %>
+        <% if (pending.length) { %>
+          <strong><%= pending.length %></strong> subject(s) / <strong><%= pendRooms %></strong> row(s) waiting to be exported.
+        <% } else { %>
+          Nothing waiting to be exported.
+        <% } %>
+      </div>
+    </div>
+    <div class="flex gap-2.5">
+      <a href="/qp?date=<%= date %>" class="border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer bg-white/15 text-white no-underline">&larr; Back to entry</a>
+      <a href="/qp/final.csv?date=<%= date %>" class="border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer bg-white/15 text-white no-underline">Download CSV</a>
+      <% var confirmMsg = 'Export ' + pending.length + ' subject(s) to dbo.room?\\n\\nFor each subject this DELETEs its existing rows in dbo.room (matched on SESSN + SUBCODE + DEPT + SEM) and inserts the finalised set.'; %>
+      <form method="post" action="/qp/export" class="m-0" onsubmit="return confirm('<%= confirmMsg %>');">
+        <input type="hidden" name="date" value="<%= date %>" />
+        <button type="submit" class="border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer bg-[#2e7d32] text-white disabled:bg-[#93b795] disabled:cursor-not-allowed" <%= pending.length ? '' : 'disabled' %>>
+          Export to SQL Server<%= pending.length ? ' (' + pending.length + ')' : '' %>
+        </button>
+      </form>
+    </div>
+  </header>
+
+  <% if (flash) { var fc = flashType === 'success' ? 'bg-[#e4f6e6] text-[#1e6b26]' : flashType === 'error' ? 'bg-[#fbe6e6] text-[#9a2626]' : 'bg-[#e7f0fb] text-[#24476f]'; %>
+    <div class="mx-5.5 mt-3.5 px-3.5 py-2.5 rounded-md text-[.88rem] <%= fc %>"><%= flash %></div>
+  <% } %>
+
+  <main class="px-5.5 py-4.5">
+    <section class="bg-white rounded-[10px] px-5 py-4.5 shadow-[0_1px_4px_rgba(0,0,0,0.08)]">
+      <form method="get" action="/qp/final" class="flex items-center gap-2.5 mb-3.5">
+        <label class="text-[.78rem] font-semibold text-[#3a4658]">Exam date</label>
+        <select name="date" class="px-2.5 py-2 border border-[#c7d0dc] rounded-md text-[.9rem] bg-white">
+          <option value="">All dates</option>
+          <% dates.forEach(function (d) { %>
+            <option value="<%= d.doe %>" <%= d.doe === date ? 'selected' : '' %>><%= d.doe %></option>
+          <% }); %>
+        </select>
+        <button class="border border-[#c7d0dc] bg-white rounded-md px-2.5 py-1.5 text-[.78rem] font-semibold text-[#24476f] cursor-pointer hover:bg-[#f1f4f8]" type="submit">Show</button>
+        <span class="text-[.8rem] text-slate-500 ml-auto">
+          <b class="text-[#1f3a5f]"><%= rows.length %></b> row(s) &middot;
+          <b class="text-[#1f3a5f]"><%= rows.reduce(function (s, r) { return s + r.QTY; }, 0) %></b> QP
+        </span>
+      </form>
+
+      <% if (!rows.length) { %>
+        <p class="text-slate-400 text-center py-4 m-0">Nothing finalised yet for this selection.</p>
+      <% } else { %>
+      <div class="overflow-x-auto">
+        <table>
+          <thead>
+            <tr><th>#</th><th>DOE</th><th>SESSN</th><th>SUBCODE</th><th>DEPT</th><th>SEM</th><th>ROOMNO</th><th class="text-right">QTY</th><th>Status</th><th>Finalised</th></tr>
+          </thead>
+          <tbody>
+            <% rows.forEach(function (r, i) { %>
+              <tr>
+                <td class="text-slate-400"><%= i + 1 %></td>
+                <td><%= r.doe %></td>
+                <td><%= r.SESSN %></td>
+                <td class="font-semibold"><%= r.SUBCODE %></td>
+                <td><%= r.DEPT %></td>
+                <td><%= r.SEM %></td>
+                <td><%= r.ROOMNO %></td>
+                <td class="text-right tabular-nums"><%= r.QTY %></td>
+                <td><% if (r.status === 'exported') { %><span class="tag ok">exported</span><% } else { %><span class="tag pend">to export</span><% } %></td>
+                <td class="text-slate-500"><%= r.finalised_on || '—' %></td>
+              </tr>
+            <% }); %>
+          </tbody>
+        </table>
+      </div>
+      <% } %>
+    </section>
+  </main>
+</body>
+</html>

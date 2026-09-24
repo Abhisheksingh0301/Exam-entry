@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %></title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/stylesheets/tailwind.css" />
+</head>
+<%
+  var btnGhost = 'border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer bg-white/15 text-white no-underline';
+
+  // Only dates that actually need a seat plan count as work.
+  var work = progress.filter(function (d) { return d.planned > 0; });
+  var doneDates    = work.filter(function (d) { return d.finalised >= d.planned; });
+  var touched      = work.filter(function (d) { return d.started > 0 || d.finalised > 0; });
+  var lastTouched  = touched.length ? touched[touched.length - 1] : null;
+  var nextTodo     = work.filter(function (d) { return d.finalised < d.planned; })[0];
+  var totPlanned   = work.reduce(function (s, d) { return s + d.planned; }, 0);
+  var totFinal     = work.reduce(function (s, d) { return s + d.finalised; }, 0);
+  var totExported  = work.reduce(function (s, d) { return s + d.exported; }, 0);
+
+  // Rooms typed in but never finalised -- the easiest thing to forget, because the
+  // entry screen moves on to the next subject and nothing nags afterwards.
+  var forgotten = work.filter(function (d) { return d.started > d.finalised; });
+  var forgottenSubs = forgotten.reduce(function (s, d) { return s + (d.started - d.finalised); }, 0);
+
+  function pct(n, of) { return of > 0 ? Math.round((n / of) * 100) : 0; }
+
+  function rowState(d) {
+    if (d.started > d.finalised) return { key: 'pending', label: 'needs finalising', cls: 'chip-warn' };
+    if (d.finalised >= d.planned) {
+      return d.exported >= d.planned
+        ? { key: 'exported', label: 'exported', cls: 'chip-ok' }
+        : { key: 'final', label: 'finalised', cls: 'chip-ok' };
+    }
+    if (d.started === 0 && d.finalised === 0) return { key: 'none', label: 'not started', cls: 'chip-mute' };
+    return { key: 'part', label: 'part done', cls: 'chip-mute' };
+  }
+%>
+<body class="m-0 bg-[#eef1f6] text-[#1f2733]">
+  <header class="flex justify-between items-center gap-4 flex-wrap bg-[#1f3a5f] text-white px-5.5 py-3.5">
+    <div>
+      <h1 class="text-[1.15rem] font-semibold m-0">Entry Progress</h1>
+      <div class="text-[.8rem] opacity-90 mt-0.75">
+        Session: <strong><%= session %></strong> &nbsp;|&nbsp; Campus: <strong><%= campus %></strong>
+        &nbsp;|&nbsp; <strong><%= work.length %></strong> exam date(s) need a seat plan
+      </div>
+    </div>
+    <div class="flex gap-2.5">
+      <a href="/qp" class="<%= btnGhost %>">&larr; Back to entry</a>
+      <a href="/qp/final" class="<%= btnGhost %>">Finalised</a>
+    </div>
+  </header>
+
+  <main class="px-5.5 py-4.5">
+    <!-- Entered but never finalised: the thing that is easy to forget -->
+    <% if (forgotten.length) { %>
+      <section class="bg-[#fff8e8] border border-[#f0d9a4] rounded-[10px] px-4.5 py-3.5 mb-4.5">
+        <div class="text-[.9rem] font-semibold text-[#8a5a00]">
+          Entered but not finalised &mdash; <%= forgotten.length %> date(s), <%= forgottenSubs %> subject(s)
+        </div>
+        <div class="text-[.78rem] text-[#8a5a00] opacity-80 mt-0.5 mb-2">
+          Rooms are typed in but the subject was never locked, so it will not export. Click a date to finish it.
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <% forgotten.forEach(function (d) { %>
+            <a href="/qp?date=<%= d.doe %>"
+               class="chip chip-warn text-[.82rem] no-underline hover:brightness-95"><%= d.doe %>
+               <b><%= d.started - d.finalised %></b> left</a>
+          <% }); %>
+        </div>
+      </section>
+    <% } else if (totFinal > 0) { %>
+      <section class="bg-[#e4f6e6] rounded-[10px] px-4.5 py-3 mb-4.5 text-[.88rem] text-[#1e6b26] font-semibold">
+        Nothing half-done &mdash; every date with entries is finalised.
+      </section>
+    <% } %>
+
+    <!-- Entries against subjects with no Count row: they can never be finalised,
+         and they do not appear in any of the counters below. -->
+    <% if (orphans.length) { %>
+      <% var orphanRooms = orphans.reduce(function (s, o) { return s + o.rooms; }, 0); %>
+      <section class="bg-[#fbe6e6] border border-[#e8b4b4] rounded-[10px] px-4.5 py-3.5 mb-4.5">
+        <div class="text-[.9rem] font-semibold text-[#9a2626]">
+          Entries the lists no longer show
+          (<%= orphans.length %> subject(s), <%= orphanRooms %> room row(s))
+        </div>
+        <div class="text-[.78rem] text-[#9a2626] opacity-80 mt-0.5 mb-2">
+          Rooms were entered against a subject that is no longer listed &mdash; see the reason on each row.
+          These cannot be finalised and will never export, and they are counted nowhere else on this page.
+          Either re-sync once the master data is right, or open the subject and delete the rows.
+        </div>
+        <table class="w-auto">
+          <thead><tr><th>Date</th><th>Subject</th><th>Dept</th><th>Sem</th><th class="text-right">Rooms</th><th class="text-right">QP</th><th>Reason</th><th></th></tr></thead>
+          <tbody>
+            <% orphans.forEach(function (o) { %>
+              <tr>
+                <td><%= o.doe %></td>
+                <td class="font-semibold"><%= o.subcode %></td>
+                <td><%= o.dept %></td>
+                <td><%= o.sem %></td>
+                <td class="text-right tabular-nums"><%= o.rooms %></td>
+                <td class="text-right tabular-nums"><%= o.qty %></td>
+                <td><span class="chip chip-warn text-[.72rem]"><%= o.reason %></span></td>
+                <td><a href="/qp?date=<%= o.doe %>&sub=<%= encodeURIComponent(o.subcode) %>"
+                       class="text-[.78rem] font-semibold text-[#24476f] no-underline hover:underline">open &rarr;</a></td>
+              </tr>
+            <% }); %>
+          </tbody>
+        </table>
+      </section>
+    <% } %>
+
+    <!-- Where you stopped -->
+    <section class="grid grid-cols-4 max-[900px]:grid-cols-2 max-[560px]:grid-cols-1 gap-3.5 mb-4.5">
+      <div class="bg-white rounded-[10px] px-4 py-3.5 shadow-[0_1px_4px_rgba(0,0,0,0.08)]">
+        <div class="text-[.72rem] uppercase tracking-wide text-slate-500 font-semibold">Entered up to</div>
+        <div class="text-[1.3rem] font-bold text-[#1f3a5f] mt-1"><%= lastTouched ? lastTouched.doe : '—' %></div>
+        <div class="text-[.75rem] text-slate-500 mt-0.5">
+          <% if (last) { %>last change <%= last %><% } else { %>nothing entered yet<% } %>
+        </div>
+      </div>
+      <div class="bg-white rounded-[10px] px-4 py-3.5 shadow-[0_1px_4px_rgba(0,0,0,0.08)]">
+        <div class="text-[.72rem] uppercase tracking-wide text-slate-500 font-semibold">Next date to do</div>
+        <div class="text-[1.3rem] font-bold text-[#8a5a00] mt-1"><%= nextTodo ? nextTodo.doe : 'all done' %></div>
+        <div class="text-[.75rem] text-slate-500 mt-0.5">
+          <% if (nextTodo) { %><%= nextTodo.planned - nextTodo.finalised %> of <%= nextTodo.planned %> subject(s) left<% } else { %>every date is finalised<% } %>
+        </div>
+      </div>
+      <div class="bg-white rounded-[10px] px-4 py-3.5 shadow-[0_1px_4px_rgba(0,0,0,0.08)]">
+        <div class="text-[.72rem] uppercase tracking-wide text-slate-500 font-semibold">Dates complete</div>
+        <div class="text-[1.3rem] font-bold text-[#1e6b26] mt-1"><%= doneDates.length %> / <%= work.length %></div>
+        <div class="text-[.75rem] text-slate-500 mt-0.5"><%= pct(doneDates.length, work.length) %>% of exam days</div>
+      </div>
+      <div class="bg-white rounded-[10px] px-4 py-3.5 shadow-[0_1px_4px_rgba(0,0,0,0.08)]">
+        <div class="text-[.72rem] uppercase tracking-wide text-slate-500 font-semibold">Subjects finalised</div>
+        <div class="text-[1.3rem] font-bold text-[#1e6b26] mt-1"><%= totFinal %> / <%= totPlanned %></div>
+        <div class="text-[.75rem] text-slate-500 mt-0.5"><%= totExported %> exported to SQL Server</div>
+      </div>
+    </section>
+
+    <section class="bg-white rounded-[10px] px-5 py-4.5 shadow-[0_1px_4px_rgba(0,0,0,0.08)]">
+      <h2 class="mt-0 mb-3.5 text-base font-semibold text-[#1f3a5f] flex justify-between items-baseline">
+        Date by date
+        <span class="text-[.75rem] font-normal text-slate-500">dates with no Count row are listed but need no entry</span>
+      </h2>
+      <div class="overflow-x-auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Exam date</th>
+              <th class="text-right">Subjects</th>
+              <th class="text-right">Started</th>
+              <th class="text-right">Finalised</th>
+              <th class="text-right">Exported</th>
+              <th class="w-44">Progress</th>
+              <th>Status</th>
+              <th class="text-right">Required</th>
+              <th class="text-right">Allotted</th>
+              <th>Last worked</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <% progress.forEach(function (d) { %>
+              <% var isWork = d.planned > 0;
+                 var done = isWork && d.finalised >= d.planned;
+                 var finPct = pct(d.finalised, d.planned);
+                 var startPct = pct(d.started, d.planned); %>
+              <tr class="<%= done ? 'bg-[#f6fbf6]' : '' %>">
+                <td class="font-semibold"><%= d.doe %></td>
+                <td class="text-right tabular-nums">
+                  <% if (isWork) { %><%= d.planned %><span class="text-slate-400">/<%= d.subjects %></span>
+                  <% } else { %><span class="text-slate-400">— /<%= d.subjects %></span><% } %>
+                </td>
+                <td class="text-right tabular-nums"><%= isWork ? d.started : '' %></td>
+                <td class="text-right tabular-nums font-semibold"><%= isWork ? d.finalised : '' %></td>
+                <td class="text-right tabular-nums text-slate-500"><%= isWork ? (d.exported || '') : '' %></td>
+                <td>
+                  <% if (isWork) { %>
+                    <div class="bar" title="<%= d.finalised %> finalised, <%= d.started %> started of <%= d.planned %>">
+                      <span class="bar-start" style="width: <%= startPct %>%"></span>
+                      <span class="bar-final" style="width: <%= finPct %>%"></span>
+                    </div>
+                  <% } %>
+                </td>
+                <td><% if (isWork) { var st = rowState(d); %><span class="chip <%= st.cls %> text-[.72rem]"><%= st.label %></span><% } %></td>
+                <td class="text-right tabular-nums"><%= isWork ? d.required : '' %></td>
+                <td class="text-right tabular-nums <%= isWork && d.allotted < d.required ? 'text-[#9a2626]' : '' %>"><%= isWork ? d.allotted : '' %></td>
+                <td class="text-slate-500 text-[.78rem]"><%= d.last_entry || '—' %></td>
+                <td class="text-right">
+                  <% if (isWork) { %>
+                    <a href="/qp?date=<%= d.doe %>" class="text-[.78rem] font-semibold text-[#24476f] no-underline hover:underline"><%= done ? 'review' : 'enter' %> &rarr;</a>
+                  <% } %>
+                </td>
+              </tr>
+            <% }); %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

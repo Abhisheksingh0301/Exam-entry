@@ -10,7 +10,10 @@ No login required.
 - express-generator scaffold, view engine **EJS**
 - **better-sqlite3** — local storage (`data/scriptcount.db`, created on first run)
 - **mssql** — reads master data + writes exports to SQL Server
-- Server JS kept minimal: `app.js`, `routes/index.js`, `db.js`, `bin/www`
+- Server JS kept minimal: `app.js`, `routes/index.js`, `routes/qp.js`, `db.js`, `bin/www`
+- **`db.js` is the whole data layer** — the single `scriptcount.db` connection, every
+  `CREATE TABLE`/`VIEW`/`INDEX`, the packet queries, and the QP allotment queries
+  (exported under `require('./db').qp`)
 
 ## Configure
 SQL Server connection is read from `.env` (already created with your values):
@@ -81,3 +84,100 @@ insert**. Review the history any time via the **Changes** link in the header (`/
 | sessn          | Sessn          |
 | remark         | Remark         |
 | (constant 0)   | Entd           |
+
+## Question Paper Allotment (`/qp`)
+
+Room-wise QP entry for a date + subject. **Everything is captured in SQLite**
+(`data/scriptcount.db`, the same file the packet entry uses) — add, edit and delete
+freely. Nothing is written to SQL Server by this module; finalised subjects wait for
+an export step you run later.
+
+### Screen
+- **Context bar** — exam date, the selected subject with its Dept/Sem, and
+  **Required = Reg + Arr** from `dbo.[Count]` for `CAMPUS_ID`.
+- **Subject rail** — every subject on that date with an `entered/required` badge and a
+  status dot (grey = nothing, amber = partial, green = balanced, blue = over,
+  dark green = finalised). Unfinished subjects sort to the top. Subjects with no
+  Count row for the campus collapse into a *Not in Count* group — shown, not hidden,
+  so a missing count is visible rather than silent.
+- **Room grid** — `Room | Max | QP | Running`. Dept/Sem/Subject are in the header, not
+  repeated on every row. **Max** is the largest QP that room has ever held.
+- **Sticky footer** — rooms, allotted, required, live balance, and Finalise.
+
+### Keyboard
+| Key | Action |
+|---|---|
+| `Enter` in QP | save and move down to the next room |
+| `↑` / `↓` | walk the QP column |
+| `Enter` in the new-room box | jump to its QP box (blank QP + a known Max saves the Max) |
+| `F4` | fill every blank QP cell with that room's Max |
+| `Ctrl+Enter` | finalise the subject |
+
+### Speed helpers
+- **Copy rooms from…** another subject on the same date (its row order is preserved —
+  that order is the walking order of the block).
+- **All rooms** — load every room ever seen.
+- **Fill blanks with Max** — then edit only the exceptions.
+
+### Finalise
+Runs pre-flight checks first: no rooms, blank QP cells, no Count row, short against
+Required, field widths of `dbo.room`, timetable drift, rooms shared with another
+subject that day. Errors block; warnings ask for confirmation. Finalising **snapshots
+Reg/Arr/Total** (the Count table has no session column and is overwritten each
+session) and locks the subject — `Unlock` re-opens it for correction.
+
+Only finalised subjects feed the **Max** column, so half-typed drafts can never set a
+room's ceiling.
+
+### Exporting to `dbo.room`
+`/qp/final` lists the finalised rows column-for-column with `dbo.room` and says how
+many subjects are waiting. **Export to SQL Server** pushes them; `/qp/final.csv`
+downloads the same rows if you would rather import them yourself.
+
+The push is **delete-then-insert per subject**, one transaction each:
+`DELETE FROM room WHERE SESSN=? AND SUBCODE=? AND DEPT=? AND SEM=?`, then one INSERT
+per room. That needs no key on `dbo.room` (it has none), is safe to re-run, and drops
+rooms deleted locally after a correction. A subject that fails rolls back alone and
+stays `final`, so the next run retries only that one. Exported subjects flip to
+`exported`; unlocking and re-finalising one puts it back in the queue.
+
+### How far have I got? (`/qp/progress`)
+The **Progress** link in the header opens a date-by-date view of the whole session:
+per exam date, how many subjects need a seat plan, how many are started, finalised
+and exported, required vs allotted, a progress bar, and when that date was last
+worked on. Four cards at the top answer the usual question directly — **Entered up
+to**, **Next date to do**, **Dates complete**, **Subjects finalised**. Each row links
+straight into that date.
+
+Two banners sit at the top when they apply:
+- **Entered but not finalised** -- dates where rooms were typed but the subject was
+  never locked, as clickable date chips. Nothing else nags you about this, because
+  the entry screen moves straight on to the next subject after a save.
+- **Entries the lists no longer show** -- rooms entered against a subject that has
+  since dropped out of the lists, with the reason on each row: *no Count row for the
+  campus*, *practical paper*, or *not in the timetable*. These can never be finalised
+  and never export, and they are counted nowhere else on the page. Either re-sync once
+  the master data is right, or open the subject and delete the rows.
+
+Each date row also carries a plain status: *needs finalising*, *part done*,
+*finalised*, *exported* or *not started*.
+
+The date dropdown on the entry screen carries the same figure (`2026-05-13 · 2/7
+done`), so you can see where you stopped without leaving the page.
+
+### One allotment per subject
+`qp_rooms` and `qp_subjects` are keyed on **SESSN + SUBCODE + DEPT + SEM, without the
+exam date** -- deliberately, because `dbo.room` has no date column either. If a subject
+code is scheduled on two dates in one session, both dates share one room list. Opening
+it on either date shows and edits the same rows.
+
+### Master data
+`Sync Master Data` (either page) caches, read-only:
+- `TIME_TABLE` → subjects + exam dates (existing behaviour)
+- `dbo.[Count]` where `Campus_ID = CAMPUS_ID` → Required figures
+- `MAX(QTY)` per `ROOMNO` from `dbo.room` → seeds the Max column on a new install
+
+Set the campus in `.env`:
+```
+CAMPUS_ID=1
+```

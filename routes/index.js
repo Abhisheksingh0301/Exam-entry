@@ -1,6 +1,7 @@
 var express = require('express');
 var router = express.Router();
 var data = require('../db');
+var qp = require('../db').qp;
 
 var PAPER_TYPES = ['REGULAR', 'ARREAR'];
 
@@ -177,12 +178,18 @@ router.post('/api/entry/:id/delete', function (req, res) {
     });
 });
 
-/* Sync master data: SQL Server -> SQLite cache (fills the dropdowns). */
+/* Sync master data: SQL Server -> SQLite cache (fills the dropdowns). Also
+   refreshes the QP allotment caches (Count + room history) so either page's
+   Sync button leaves the whole app up to date. */
 router.post('/sync', function (req, res) {
   data.syncMasterData()
     .then(function (r) {
-      var msg = 'Synced ' + r.subjects + ' subject(s) for session ' + (r.session || '(none)') + '.';
-      res.redirect('/?type=success&msg=' + encodeURIComponent(msg));
+      return qp.syncQpMaster().then(function (q) {
+        var msg = 'Synced ' + r.subjects + ' subject(s) for session ' + (r.session || '(none)') +
+                  ', ' + q.counts + ' count row(s), ' + q.rooms + ' room(s).';
+        if (q.warnings.length) msg += ' Warning: ' + q.warnings.join(' | ');
+        res.redirect('/?type=success&msg=' + encodeURIComponent(msg));
+      });
     })
     .catch(function (err) {
       res.redirect('/?type=error&msg=' + encodeURIComponent('Sync failed: ' + err.message));

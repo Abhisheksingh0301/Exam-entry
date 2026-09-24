@@ -31,6 +31,12 @@ db.pragma('synchronous = FULL');
 try {
   const cols = db.prepare('PRAGMA table_info(subjects_cache)').all().map(function (c) { return c.name; });
   if (cols.length && cols.indexOf('doe') === -1) db.exec('DROP TABLE subjects_cache');
+  // Practical flag added later: add the column rather than dropping the cache, so
+  // the app keeps working until the next sync fills it in (everything defaults to
+  // "not practical", which is how it behaved before).
+  else if (cols.length && cols.indexOf('practical') === -1) {
+    db.exec('ALTER TABLE subjects_cache ADD COLUMN practical INTEGER NOT NULL DEFAULT 0');
+  }
 } catch (e) { /* ignore */ }
 
 db.exec(`
@@ -48,6 +54,7 @@ db.exec(`
     total_scripts INTEGER NOT NULL DEFAULT 1,
     sessn         TEXT,
     doe           TEXT,
+    practical     INTEGER NOT NULL DEFAULT 0,   -- TIME_TABLE.Practical
     PRIMARY KEY (subcode, doe)
   );
 
@@ -77,6 +84,56 @@ db.exec(`
     created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     exported_at TEXT
   );
+
+  /* ---------------- Question-paper allotment ---------------- */
+
+  -- dbo.[Count] for CAMPUS_ID, cached. Drives "Required" (Reg + Arr).
+  CREATE TABLE IF NOT EXISTS count_cache (
+    subcode   TEXT    NOT NULL,
+    campus_id INTEGER NOT NULL,
+    reg       INTEGER,
+    arr       INTEGER,
+    total     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (subcode, campus_id)
+  );
+
+  -- MAX(QTY) per room from dbo.room history. Seeds the Max column on a new install.
+  CREATE TABLE IF NOT EXISTS room_stats (
+    roomno  TEXT PRIMARY KEY,
+    max_qty INTEGER NOT NULL DEFAULT 0,
+    uses    INTEGER NOT NULL DEFAULT 0
+  );
+
+  -- Room-wise QP entries. qty = 0 means "room listed, QP count not typed yet".
+  CREATE TABLE IF NOT EXISTS qp_rooms (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    sessn      TEXT NOT NULL,
+    doe        TEXT,
+    subcode    TEXT NOT NULL,
+    dept       TEXT NOT NULL,
+    sem        TEXT NOT NULL DEFAULT '',
+    roomno     TEXT NOT NULL,
+    qty        INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT
+  );
+
+  -- Per-subject state. Finalising snapshots the Required figures, because
+  -- dbo.[Count] has no session column and is overwritten every session.
+  CREATE TABLE IF NOT EXISTS qp_subjects (
+    sessn        TEXT NOT NULL,
+    subcode      TEXT NOT NULL,
+    dept         TEXT NOT NULL,
+    sem          TEXT NOT NULL DEFAULT '',
+    doe          TEXT,
+    status       TEXT NOT NULL DEFAULT 'draft',   -- draft | final | exported
+    req_reg      INTEGER,
+    req_arr      INTEGER,
+    req_total    INTEGER,
+    finalised_on TEXT,
+    exported_on  TEXT,
+    PRIMARY KEY (sessn, subcode, dept, sem)
+  );
 `);
 
 // A packet is uniquely identified by everything EXCEPT No_of_Scripts. The
@@ -90,6 +147,33 @@ try {
 } catch (e) {
   console.warn('Could not create unique packet index (existing duplicates?):', e.message);
 }
+
+// One row per room per subject -- the guard dbo.room doesn't have.
+try {
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_qp_rooms_key
+       ON qp_rooms (sessn, subcode, dept, sem, roomno)`
+  );
+} catch (e) {
+  console.warn('Could not create unique qp_rooms index (existing duplicates?):', e.message);
+}
+
+// Max = the largest QP count a room has ever held: server history plus locally
+// FINALISED subjects (draft rows are excluded, so half-typed junk cannot set a
+// room's ceiling). obs = how many observations back it up.
+db.exec(`
+  CREATE VIEW IF NOT EXISTS room_max AS
+  SELECT roomno, MAX(mq) AS max_qty, SUM(n) AS obs FROM (
+    SELECT roomno, max_qty AS mq, uses AS n FROM room_stats
+    UNION ALL
+    SELECT q.roomno, MAX(q.qty), COUNT(*)
+      FROM qp_rooms q
+      JOIN qp_subjects s ON s.sessn = q.sessn AND s.subcode = q.subcode
+                        AND s.dept  = q.dept  AND s.sem     = q.sem
+     WHERE s.status IN ('final','exported')
+     GROUP BY q.roomno
+  ) GROUP BY roomno
+`);
 
 /* ------------------------------------------------------------------ *
  * SQL Server config
@@ -362,7 +446,8 @@ async function syncMasterData() {
              t.SEMESTER                       AS semester,
              ISNULL(s.TOTAL_SCRIPTS, 1)       AS total_scripts,
              t.SESSN                          AS sessn,
-             CONVERT(char(10), t.DOE, 23)     AS doe
+             CONVERT(char(10), t.DOE, 23)     AS doe,
+             CASE WHEN t.Practical = 1 THEN 1 ELSE 0 END AS practical
         FROM dbo.TIME_TABLE t
         LEFT JOIN dbo.Script_per_candidate s ON s.SUBJECT = t.SUBJECT
        WHERE t.SESSN = @sessn
@@ -372,11 +457,12 @@ async function syncMasterData() {
     const replace = db.transaction((rows, session) => {
       db.prepare('DELETE FROM subjects_cache').run();
       const ins = db.prepare(
-        `INSERT INTO subjects_cache (subcode, dept, semester, total_scripts, sessn, doe)
-         VALUES (@subcode, @dept, @semester, @total_scripts, @sessn, @doe)
+        `INSERT INTO subjects_cache (subcode, dept, semester, total_scripts, sessn, doe, practical)
+         VALUES (@subcode, @dept, @semester, @total_scripts, @sessn, @doe, @practical)
          ON CONFLICT(subcode, doe) DO UPDATE SET
            dept=excluded.dept, semester=excluded.semester,
-           total_scripts=excluded.total_scripts, sessn=excluded.sessn`
+           total_scripts=excluded.total_scripts, sessn=excluded.sessn,
+           practical=excluded.practical`
       );
       for (const r of rows) {
         ins.run({
@@ -385,7 +471,8 @@ async function syncMasterData() {
           semester: (r.semester || '').trim(),
           total_scripts: r.total_scripts || 1,
           sessn: r.sessn || session,
-          doe: r.doe || null
+          doe: r.doe || null,
+          practical: r.practical ? 1 : 0
         });
       }
       setMeta('current_session', session);
@@ -506,8 +593,680 @@ async function exportToSqlServer() {
   return { inserted, updated, failed, total: pending.length, groupsUpdated, groupsFailed, errors };
 }
 
+/* ================================================================== *
+ * Question-paper allotment (room-wise QP entry)
+ *
+ * Local-only: add / edit / delete all happen in SQLite. Nothing here is
+ * written back to SQL Server -- finalised subjects are marked "final" and
+ * wait for a later export step. Only syncQpMaster() touches SQL Server, and
+ * only to read. Exported below under the `qp` namespace.
+ * ================================================================== */
+// Seat planning is done for one campus only (dbo.[Count] is keyed by Campus_ID).
+const CAMPUS_ID = parseInt(process.env.CAMPUS_ID || '1', 10);
+
+// Column widths of dbo.room — checked before a subject is finalised so a later
+// export cannot truncate or fail.
+const LIMITS = { roomno: 50, subcode: 12, dept: 50, sem: 5 };
+
+/* ------------------------------------------------------------------ *
+ * Helpers
+ * ------------------------------------------------------------------ */
+
+/** Rooms are matched case-insensitively — 'mcv-1' and 'MCV-1' are one room. */
+function normRoom(s) {
+  return String(s == null ? '' : s).trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
+function nowStr() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+         p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+/**
+ * Resolve subcode + exam date to the full key (sessn, dept, sem) from the cached
+ * timetable. Every other function here takes that key.
+ */
+function resolveSubject(subcode, doe) {
+  const byDate = db.prepare(
+    `SELECT subcode, TRIM(dept) AS dept, COALESCE(semester,'') AS sem, sessn, doe
+       FROM subjects_cache WHERE subcode = ? AND doe = ?`
+  );
+  const anyDate = db.prepare(
+    `SELECT subcode, TRIM(dept) AS dept, COALESCE(semester,'') AS sem, sessn, doe
+       FROM subjects_cache WHERE subcode = ? ORDER BY doe LIMIT 1`
+  );
+  return (doe ? byDate.get(subcode, doe) : null) || anyDate.get(subcode) || null;
+}
+
+/** Required (Reg / Arr / Total) for a subject, campus-filtered. */
+function required(subcode) {
+  return db
+    .prepare('SELECT reg, arr, total FROM count_cache WHERE subcode = ? AND campus_id = ?')
+    .get(String(subcode).trim(), CAMPUS_ID) || null;
+}
+
+function campusId() { return CAMPUS_ID; }
+
+/* ------------------------------------------------------------------ *
+ * Subject rail
+ * ------------------------------------------------------------------ */
+
+/** Exam dates present in the cached timetable. */
+function qpExamDates() {
+  return db
+    .prepare(`SELECT doe, COUNT(*) AS subjects FROM subjects_cache
+               WHERE doe IS NOT NULL AND doe <> '' AND practical = 0
+               GROUP BY doe ORDER BY doe`)
+    .all();
+}
+
+/**
+ * Every subject scheduled on `doe`, with its Required figure, what has been
+ * entered so far, and its state. Subjects with no campus Count row come back with
+ * req_total = null — the UI groups them separately rather than hiding them, so a
+ * missing Count is visible instead of silent.
+ */
+function subjectsForDate(doe) {
+  return db.prepare(`
+    SELECT s.subcode,
+           TRIM(s.dept)                  AS dept,
+           COALESCE(s.semester,'')       AS sem,
+           s.sessn,
+           s.doe,
+           c.reg, c.arr,
+           c.total                       AS req_total,
+           COALESCE(e.rooms, 0)          AS rooms,
+           COALESCE(e.allotted, 0)       AS allotted,
+           COALESCE(e.blanks, 0)         AS blanks,
+           COALESCE(q.status, 'draft')   AS status
+      FROM subjects_cache s
+      LEFT JOIN count_cache c
+             ON c.subcode = TRIM(s.subcode) AND c.campus_id = @campus
+      LEFT JOIN (
+            SELECT sessn, subcode, dept, sem,
+                   COUNT(*) AS rooms,
+                   SUM(qty) AS allotted,
+                   SUM(CASE WHEN qty <= 0 THEN 1 ELSE 0 END) AS blanks
+              FROM qp_rooms GROUP BY sessn, subcode, dept, sem
+           ) e ON e.sessn = s.sessn AND e.subcode = s.subcode
+              AND e.dept = TRIM(s.dept) AND e.sem = COALESCE(s.semester,'')
+      LEFT JOIN qp_subjects q
+             ON q.sessn = s.sessn AND q.subcode = s.subcode
+            AND q.dept = TRIM(s.dept) AND q.sem = COALESCE(s.semester,'')
+     WHERE s.doe = @doe AND s.practical = 0
+     ORDER BY s.subcode
+  `).all({ doe: doe, campus: CAMPUS_ID });
+}
+
+/* ------------------------------------------------------------------ *
+ * Rows for one subject
+ * ------------------------------------------------------------------ */
+
+/**
+ * The room grid. Entry order is preserved — that order is the walking order of
+ * the block, captured the first time it was typed. `shared` counts other subjects
+ * using the same room on the same day: legitimate, but worth showing.
+ */
+function rowsFor(k) {
+  return db.prepare(`
+    SELECT q.id, q.roomno, q.qty,
+           COALESCE(m.max_qty, 0) AS max_qty,
+           COALESCE(m.obs, 0)     AS obs,
+           (SELECT COUNT(*) FROM qp_rooms o
+             WHERE o.roomno = q.roomno AND o.doe = q.doe
+               AND NOT (o.subcode = q.subcode AND o.dept = q.dept AND o.sem = q.sem)
+           ) AS shared
+      FROM qp_rooms q
+      LEFT JOIN room_max m ON m.roomno = q.roomno
+     WHERE q.sessn = @sessn AND q.subcode = @subcode
+       AND q.dept = @dept AND q.sem = @sem
+     ORDER BY q.id
+  `).all(k);
+}
+
+function subjectState(k) {
+  const row = db.prepare(
+    `SELECT * FROM qp_subjects
+      WHERE sessn=@sessn AND subcode=@subcode AND dept=@dept AND sem=@sem`
+  ).get(k);
+  return row || {
+    sessn: k.sessn, subcode: k.subcode, dept: k.dept, sem: k.sem, doe: k.doe,
+    status: 'draft', req_reg: null, req_arr: null, req_total: null,
+    finalised_on: null, exported_on: null
+  };
+}
+
+function isLocked(k) {
+  return subjectState(k).status !== 'draft';
+}
+
+/** Totals for the sticky footer. */
+function totals(k) {
+  const t = db.prepare(
+    `SELECT COUNT(*) AS rooms, COALESCE(SUM(qty),0) AS allotted,
+            COALESCE(SUM(CASE WHEN qty <= 0 THEN 1 ELSE 0 END),0) AS blanks
+       FROM qp_rooms
+      WHERE sessn=@sessn AND subcode=@subcode AND dept=@dept AND sem=@sem`
+  ).get(k);
+  const req = required(k.subcode);
+  return {
+    rooms: t.rooms,
+    allotted: t.allotted,
+    blanks: t.blanks,
+    reg: req ? req.reg : null,
+    arr: req ? req.arr : null,
+    required: req ? req.total : null,
+    balance: req ? t.allotted - req.total : null
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Writes (draft subjects only — callers check isLocked first)
+ * ------------------------------------------------------------------ */
+
+const upsertStmt = db.prepare(`
+  INSERT INTO qp_rooms (sessn, doe, subcode, dept, sem, roomno, qty)
+  VALUES (@sessn, @doe, @subcode, @dept, @sem, @roomno, @qty)
+  ON CONFLICT (sessn, subcode, dept, sem, roomno)
+  DO UPDATE SET qty = excluded.qty, updated_at = datetime('now','localtime')
+`);
+
+const findRow = db.prepare(
+  `SELECT id FROM qp_rooms
+    WHERE sessn=@sessn AND subcode=@subcode AND dept=@dept AND sem=@sem AND roomno=@roomno`
+);
+
+/** Add a room, or overwrite its count if the room is already listed. */
+function upsertRow(k, roomno, qty) {
+  const room = normRoom(roomno);
+  if (!room) throw new Error('Room no. is required');
+  const n = parseInt(qty, 10);
+  if (!Number.isInteger(n) || n < 0) throw new Error('No. of QPs must be 0 or more');
+  const params = Object.assign({}, k, { roomno: room, qty: n });
+  const existed = findRow.get(params);
+  upsertStmt.run(params);
+  return { id: findRow.get(params).id, replaced: !!existed };
+}
+
+function updateQty(id, qty) {
+  const n = parseInt(qty, 10);
+  if (!Number.isInteger(n) || n < 0) throw new Error('No. of QPs must be 0 or more');
+  return db.prepare(
+    "UPDATE qp_rooms SET qty = ?, updated_at = datetime('now','localtime') WHERE id = ?"
+  ).run(n, id).changes > 0;
+}
+
+function updateRoom(id, roomno) {
+  const room = normRoom(roomno);
+  if (!room) throw new Error('Room no. is required');
+  return db.prepare(
+    "UPDATE qp_rooms SET roomno = ?, updated_at = datetime('now','localtime') WHERE id = ?"
+  ).run(room, id).changes > 0;
+}
+
+function getRow(id) {
+  return db.prepare('SELECT * FROM qp_rooms WHERE id = ?').get(id);
+}
+
+function deleteRow(id) {
+  return db.prepare('DELETE FROM qp_rooms WHERE id = ?').run(id).changes;
+}
+
+function clearSubject(k) {
+  return db.prepare(
+    `DELETE FROM qp_rooms WHERE sessn=@sessn AND subcode=@subcode AND dept=@dept AND sem=@sem`
+  ).run(k).changes;
+}
+
+/* ------------------------------------------------------------------ *
+ * Seeding / prefill
+ * ------------------------------------------------------------------ */
+
+/**
+ * Sources for "Copy rooms": any subject in this session that already has rooms.
+ * Same-date subjects come first (`other` = 0) since a day usually reuses one block
+ * of rooms, then the most recently worked subjects from other dates -- a subject
+ * often repeats its room list across exam days.
+ */
+function copySources(k) {
+  return db.prepare(`
+    SELECT subcode, dept, sem, doe,
+           COUNT(*)                              AS rooms,
+           COALESCE(SUM(qty),0)                  AS allotted,
+           CASE WHEN doe = @doe THEN 0 ELSE 1 END AS other,
+           MAX(COALESCE(updated_at, created_at)) AS last_entry
+      FROM qp_rooms
+     WHERE sessn = @sessn
+       AND NOT (subcode = @subcode AND dept = @dept AND sem = @sem AND doe = @doe)
+     GROUP BY subcode, dept, sem, doe
+     ORDER BY other, CASE WHEN doe = @doe THEN subcode END, last_entry DESC
+     LIMIT 40
+  `).all(k);
+}
+
+const seedRows = db.transaction(function (k, rooms, withQty) {
+  const ins = db.prepare(`
+    INSERT INTO qp_rooms (sessn, doe, subcode, dept, sem, roomno, qty)
+    VALUES (@sessn, @doe, @subcode, @dept, @sem, @roomno, @qty)
+    ON CONFLICT (sessn, subcode, dept, sem, roomno) DO NOTHING
+  `);
+  let added = 0;
+  for (const r of rooms) {
+    added += ins.run(Object.assign({}, k, {
+      roomno: normRoom(r.roomno),
+      qty: withQty ? (parseInt(r.qty, 10) || 0) : 0
+    })).changes;
+  }
+  return added;
+});
+
+/**
+ * Seed the grid with rooms. source = 'SUBCODE|DEPT|SEM|DOE' copies that subject's
+ * room list in its own order (the DOE may be another exam date, and defaults to
+ * this subject's own); 'history' loads every room seen before, most-used first.
+ *
+ * withQty decides what lands in the QP column: false (the default) leaves every
+ * copied room blank, true brings the counts over — the source subject's own counts,
+ * or each room's Max when seeding from history. Rooms already in the grid are never
+ * touched either way.
+ */
+function seed(k, source, withQty) {
+  let rooms;
+  if (source === 'history') {
+    rooms = db.prepare(
+      'SELECT roomno, max_qty AS qty FROM room_max ORDER BY obs DESC, roomno'
+    ).all();
+  } else {
+    const parts = String(source || '').split('|');
+    rooms = db.prepare(
+      `SELECT roomno, qty FROM qp_rooms
+        WHERE doe = ? AND subcode = ? AND dept = ? AND sem = ? ORDER BY id`
+    ).all(parts[3] || k.doe, parts[0], parts[1], parts[2] || '');
+  }
+  return seedRows(k, rooms, !!withQty);
+}
+
+/** Fill every blank (qty 0) cell with that room's Max. Returns rows changed. */
+function fillFromMax(k) {
+  return db.prepare(`
+    UPDATE qp_rooms
+       SET qty = COALESCE((SELECT m.max_qty FROM room_max m WHERE m.roomno = qp_rooms.roomno), 0),
+           updated_at = datetime('now','localtime')
+     WHERE sessn=@sessn AND subcode=@subcode AND dept=@dept AND sem=@sem AND qty <= 0
+  `).run(k).changes;
+}
+
+/** Room autocomplete — every room known, locally or from history. */
+function roomSuggest(limit) {
+  return db.prepare(
+    'SELECT roomno, max_qty FROM room_max ORDER BY obs DESC, roomno LIMIT ?'
+  ).all(limit || 400);
+}
+
+/* ------------------------------------------------------------------ *
+ * Pre-flight checks + finalise
+ * ------------------------------------------------------------------ */
+
+/**
+ * Everything that must be true before a subject is finalised. Errors block;
+ * warnings can be accepted. Runs locally, so SQL Server only ever sees a
+ * validated set whenever the export is wired up.
+ */
+function checks(k) {
+  const out = [];
+  const err = function (msg) { out.push({ level: 'error', msg: msg }); };
+  const warn = function (msg) { out.push({ level: 'warn', msg: msg }); };
+
+  const rows = rowsFor(k);
+  const req = required(k.subcode);
+
+  if (!rows.length) err('No rooms entered for this subject.');
+
+  const blanks = rows.filter(function (r) { return r.qty <= 0; })
+                     .map(function (r) { return r.roomno; });
+  if (blanks.length) {
+    err('No. of QPs is blank for ' + blanks.length + ' room(s): ' +
+        blanks.slice(0, 6).join(', ') + (blanks.length > 6 ? ' …' : ''));
+  }
+
+  if (!req) {
+    err('No record in Count for campus ' + CAMPUS_ID + ' — the required figure is unknown.');
+  } else {
+    const allotted = rows.reduce(function (s, r) { return s + r.qty; }, 0);
+    if (allotted < req.total) {
+      err('Short by ' + (req.total - allotted) + ' QP — allotted ' + allotted +
+          ' against ' + req.total + ' required.');
+    } else if (req.total > 0 && allotted - req.total > 25 && allotted > req.total * 1.25) {
+      warn('Over-allotted by ' + (allotted - req.total) + ' QP (' +
+           Math.round(((allotted - req.total) / req.total) * 100) + '% above required).');
+    }
+  }
+
+  // Field widths of dbo.room — caught now rather than at export time.
+  if (String(k.subcode).length > LIMITS.subcode) {
+    err('Subject code is ' + String(k.subcode).length + ' characters; room.SUBCODE holds ' +
+        LIMITS.subcode + '.');
+  }
+  if (String(k.dept).length > LIMITS.dept) err('Dept is longer than ' + LIMITS.dept + ' characters.');
+  if (String(k.sem).length > LIMITS.sem) err('Semester is longer than ' + LIMITS.sem + ' characters.');
+  const longRooms = rows.filter(function (r) { return r.roomno.length > LIMITS.roomno; })
+                        .map(function (r) { return r.roomno; });
+  if (longRooms.length) err('Room no. too long (max ' + LIMITS.roomno + '): ' + longRooms.join(', '));
+
+  // The timetable may have moved since typing started.
+  const tt = db.prepare(
+    `SELECT 1 FROM subjects_cache
+      WHERE subcode=@subcode AND TRIM(dept)=@dept
+        AND COALESCE(semester,'')=@sem AND doe=@doe`
+  ).get(k);
+  if (!tt) warn('This subject/date is no longer in the cached timetable — re-sync master data.');
+
+  const shared = rows.filter(function (r) { return r.shared > 0; })
+                     .map(function (r) { return r.roomno; });
+  if (shared.length) warn('Also used by another subject on this date: ' + shared.join(', ') + '.');
+
+  return out;
+}
+
+/**
+ * Lock a subject. Snapshots Reg/Arr/Total as they stand now, because dbo.[Count]
+ * carries no session and is overwritten next session.
+ */
+function finalise(k, opts) {
+  const problems = checks(k);
+  if (problems.some(function (p) { return p.level === 'error'; })) {
+    return { ok: false, problems: problems };
+  }
+  if (problems.length && !(opts && opts.acceptWarnings)) {
+    return { ok: false, needsConfirm: true, problems: problems };
+  }
+
+  const req = required(k.subcode) || {};
+  db.prepare(`
+    INSERT INTO qp_subjects (sessn, subcode, dept, sem, doe, status, req_reg, req_arr, req_total, finalised_on)
+    VALUES (@sessn, @subcode, @dept, @sem, @doe, 'final', @reg, @arr, @total, @at)
+    ON CONFLICT (sessn, subcode, dept, sem) DO UPDATE SET
+      status='final', doe=excluded.doe, req_reg=excluded.req_reg,
+      req_arr=excluded.req_arr, req_total=excluded.req_total,
+      finalised_on=excluded.finalised_on
+  `).run(Object.assign({}, k, {
+    reg: req.reg == null ? null : req.reg,
+    arr: req.arr == null ? null : req.arr,
+    total: req.total == null ? null : req.total,
+    at: nowStr()
+  }));
+  return { ok: true, problems: problems };
+}
+
+/** Re-open a finalised subject for correction. */
+function unlock(k) {
+  return db.prepare(`
+    UPDATE qp_subjects SET status='draft', finalised_on=NULL
+     WHERE sessn=@sessn AND subcode=@subcode AND dept=@dept AND sem=@sem
+  `).run(k).changes;
+}
+
+/* ------------------------------------------------------------------ *
+ * Finalised data, ready for a later export to SQL Server
+ * ------------------------------------------------------------------ */
+
+/** Column-for-column with dbo.room. Nothing here is pushed automatically. */
+function finalisedRows(doe) {
+  return db.prepare(`
+    SELECT q.sessn AS SESSN, q.subcode AS SUBCODE, q.dept AS DEPT,
+           q.sem   AS SEM,   q.roomno  AS ROOMNO,  q.qty AS QTY,
+           s.status, s.doe, s.finalised_on
+      FROM qp_rooms q
+      JOIN qp_subjects s ON s.sessn=q.sessn AND s.subcode=q.subcode
+                        AND s.dept=q.dept  AND s.sem=q.sem
+     WHERE s.status IN ('final','exported')
+       AND (@doe IS NULL OR s.doe = @doe)
+     ORDER BY s.doe, q.subcode, q.id
+  `).all({ doe: doe || null });
+}
+
+/** Header counters for a date. */
+function dateSummary(doe) {
+  const subs = subjectsForDate(doe);
+  const planned = subs.filter(function (s) { return s.req_total != null; });
+  return {
+    subjects: planned.length,
+    unplanned: subs.length - planned.length,
+    required: planned.reduce(function (s, r) { return s + (r.req_total || 0); }, 0),
+    allotted: planned.reduce(function (s, r) { return s + r.allotted; }, 0),
+    final: planned.filter(function (s) { return s.status !== 'draft'; }).length
+  };
+}
+
+/**
+ * One row per exam date: how much of that day's work is done. This is the
+ * "how far have I got?" view -- the subject rail only ever shows one date.
+ * `planned` counts subjects with a campus Count row (the ones needing a seat
+ * plan); `subjects` counts everything in the timetable that day.
+ */
+function dateProgress() {
+  return db.prepare(`
+    SELECT s.doe,
+           COUNT(*)                                                          AS subjects,
+           SUM(CASE WHEN c.total IS NOT NULL THEN 1 ELSE 0 END)              AS planned,
+           SUM(CASE WHEN c.total IS NOT NULL AND e.rooms > 0 THEN 1 ELSE 0 END) AS started,
+           SUM(CASE WHEN q.status IN ('final','exported') THEN 1 ELSE 0 END) AS finalised,
+           SUM(CASE WHEN q.status = 'exported' THEN 1 ELSE 0 END)            AS exported,
+           COALESCE(SUM(c.total), 0)                                         AS required,
+           COALESCE(SUM(e.allotted), 0)                                      AS allotted,
+           MAX(e.last_entry)                                                 AS last_entry
+      FROM subjects_cache s
+      LEFT JOIN count_cache c
+             ON c.subcode = TRIM(s.subcode) AND c.campus_id = @campus
+      LEFT JOIN (
+            SELECT sessn, subcode, dept, sem,
+                   COUNT(*) AS rooms, SUM(qty) AS allotted,
+                   MAX(COALESCE(updated_at, created_at)) AS last_entry
+              FROM qp_rooms GROUP BY sessn, subcode, dept, sem
+           ) e ON e.sessn = s.sessn AND e.subcode = s.subcode
+              AND e.dept = TRIM(s.dept) AND e.sem = COALESCE(s.semester,'')
+      LEFT JOIN qp_subjects q
+             ON q.sessn = s.sessn AND q.subcode = s.subcode
+            AND q.dept = TRIM(s.dept) AND q.sem = COALESCE(s.semester,'')
+     WHERE s.doe IS NOT NULL AND s.doe <> '' AND s.practical = 0
+     GROUP BY s.doe
+     ORDER BY s.doe
+  `).all({ campus: CAMPUS_ID });
+}
+
+/**
+ * Rooms entered against a subject the app no longer shows, for any of three
+ * reasons: no Count row for this campus (nothing to check the balance against),
+ * the paper is a practical (excluded from the QP lists), or it has dropped out of
+ * the timetable. None of them appear in the subject rail or in dateProgress, so
+ * without this they would sit in the database forever, unnoticed.
+ */
+function orphanEntries() {
+  return db.prepare(`
+    SELECT q.doe, q.subcode, q.dept, q.sem,
+           COUNT(*)                    AS rooms,
+           COALESCE(SUM(q.qty),0)      AS qty,
+           COALESCE(s.status, 'draft') AS status,
+           CASE WHEN sc.subcode IS NULL  THEN 'not in the timetable'
+                WHEN sc.practical = 1    THEN 'practical paper'
+                ELSE 'no Count row for campus ' || @campus
+           END                         AS reason
+      FROM qp_rooms q
+      LEFT JOIN subjects_cache sc
+             ON sc.subcode = q.subcode AND sc.doe = q.doe
+      LEFT JOIN count_cache c
+             ON c.subcode = TRIM(q.subcode) AND c.campus_id = @campus
+      LEFT JOIN qp_subjects s
+             ON s.sessn = q.sessn AND s.subcode = q.subcode
+            AND s.dept = q.dept AND s.sem = q.sem
+     WHERE sc.subcode IS NULL OR sc.practical = 1 OR c.subcode IS NULL
+     GROUP BY q.doe, q.subcode, q.dept, q.sem, s.status, reason
+     ORDER BY q.doe, q.subcode
+  `).all({ campus: CAMPUS_ID });
+}
+
+/** When any QP row was last added or changed, across every date. */
+function lastActivity() {
+  const r = db.prepare(
+    'SELECT MAX(COALESCE(updated_at, created_at)) AS at FROM qp_rooms'
+  ).get();
+  return r ? r.at : null;
+}
+
+/**
+ * Finalised subjects not yet pushed to SQL Server. Unlocking + re-finalising a
+ * subject puts it back in this list, so a correction is exported again.
+ */
+function pendingExport(doe) {
+  return db.prepare(`
+    SELECT s.sessn, s.subcode, s.dept, s.sem, s.doe,
+           COUNT(q.id)            AS rooms,
+           COALESCE(SUM(q.qty),0) AS qty
+      FROM qp_subjects s
+      LEFT JOIN qp_rooms q ON q.sessn=s.sessn AND q.subcode=s.subcode
+                          AND q.dept=s.dept  AND q.sem=s.sem
+     WHERE s.status = 'final'
+       AND (@doe IS NULL OR s.doe = @doe)
+     GROUP BY s.sessn, s.subcode, s.dept, s.sem, s.doe
+     ORDER BY s.doe, s.subcode
+  `).all({ doe: doe || null });
+}
+
+/**
+ * Push finalised subjects to dbo.room.
+ *
+ * One transaction PER SUBJECT, delete-then-insert:
+ *   DELETE FROM room WHERE SESSN/SUBCODE/DEPT/SEM   -- clears the old set
+ *   INSERT one row per room
+ * That needs no key on dbo.room (it has none), is safe to re-run, and drops rooms
+ * that were deleted locally after a correction. A subject that fails rolls back on
+ * its own and stays 'final', so the next run retries just that one.
+ */
+async function exportQpToSqlServer(doe) {
+  const subjects = pendingExport(doe);
+  if (!subjects.length) {
+    return { total: 0, subjects: 0, rows: 0, failed: 0, errors: [] };
+  }
+
+  const roomsOf = db.prepare(
+    `SELECT roomno, qty FROM qp_rooms
+      WHERE sessn=? AND subcode=? AND dept=? AND sem=? ORDER BY id`
+  );
+  const markExported = db.prepare(
+    `UPDATE qp_subjects SET status='exported', exported_on=?
+      WHERE sessn=? AND subcode=? AND dept=? AND sem=?`
+  );
+
+  const pool = await sql.connect(mssqlConfig());
+  let done = 0, pushed = 0, failed = 0;
+  const errors = [];
+
+  try {
+    for (const s of subjects) {
+      const rows = roomsOf.all(s.sessn, s.subcode, s.dept, s.sem);
+      const tx = new sql.Transaction(pool);
+      let began = false;
+      try {
+        await tx.begin();
+        began = true;
+
+        await new sql.Request(tx)
+          .input('sessn', sql.VarChar(50), s.sessn)
+          .input('subcode', sql.NVarChar(12), s.subcode)
+          .input('dept', sql.NVarChar(50), s.dept)
+          .input('sem', sql.NVarChar(5), s.sem)
+          .query(`DELETE FROM dbo.room
+                   WHERE SESSN=@sessn AND SUBCODE=@subcode AND DEPT=@dept AND SEM=@sem`);
+
+        for (const r of rows) {
+          await new sql.Request(tx)
+            .input('roomno', sql.NVarChar(50), r.roomno)
+            .input('dept', sql.NVarChar(50), s.dept)
+            .input('sem', sql.NVarChar(5), s.sem)
+            .input('qty', sql.Int, r.qty)
+            .input('subcode', sql.NVarChar(12), s.subcode)
+            .input('sessn', sql.VarChar(50), s.sessn)
+            .query(`INSERT INTO dbo.room (ROOMNO, DEPT, SEM, QTY, SUBCODE, SESSN)
+                    VALUES (@roomno, @dept, @sem, @qty, @subcode, @sessn)`);
+        }
+
+        await tx.commit();
+        markExported.run(nowStr(), s.sessn, s.subcode, s.dept, s.sem);
+        done++;
+        pushed += rows.length;
+      } catch (e) {
+        if (began) { try { await tx.rollback(); } catch (ignore) { /* already rolled back */ } }
+        failed++;
+        errors.push(s.subcode + ' (' + s.doe + '): ' + e.message);
+      }
+    }
+  } finally {
+    await pool.close();
+  }
+
+  return { total: subjects.length, subjects: done, rows: pushed, failed: failed, errors: errors };
+}
+
+/* ------------------------------------------------------------------ *
+ * SQL Server -> SQLite cache (read-only; runs from Sync Master Data)
+ * ------------------------------------------------------------------ */
+async function syncQpMaster() {
+  const pool = await sql.connect(mssqlConfig());
+  const result = { counts: 0, rooms: 0, warnings: [] };
+  try {
+    try {
+      const rs = await pool.request().input('campus', sql.Int, CAMPUS_ID).query(`
+        SELECT LTRIM(RTRIM(Sub_PCode)) AS subcode, Reg, Arr, Total
+          FROM dbo.[Count]
+         WHERE Campus_ID = @campus
+      `);
+      const replace = db.transaction(function (rows) {
+        db.prepare('DELETE FROM count_cache WHERE campus_id = ?').run(CAMPUS_ID);
+        const ins = db.prepare(
+          `INSERT INTO count_cache (subcode, campus_id, reg, arr, total)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (subcode, campus_id) DO UPDATE SET
+             reg=excluded.reg, arr=excluded.arr, total=excluded.total`
+        );
+        for (const r of rows) ins.run(r.subcode, CAMPUS_ID, r.Reg, r.Arr, r.Total || 0);
+      });
+      replace(rs.recordset);
+      result.counts = rs.recordset.length;
+    } catch (e) {
+      result.warnings.push('Count: ' + e.message);
+    }
+
+    try {
+      const rs = await pool.request().query(`
+        SELECT LTRIM(RTRIM(ROOMNO)) AS roomno, MAX(QTY) AS max_qty, COUNT(*) AS uses
+          FROM dbo.room
+         WHERE ROOMNO IS NOT NULL AND LTRIM(RTRIM(ROOMNO)) <> ''
+         GROUP BY LTRIM(RTRIM(ROOMNO))
+      `);
+      const replace = db.transaction(function (rows) {
+        db.prepare('DELETE FROM room_stats').run();
+        const ins = db.prepare(
+          `INSERT INTO room_stats (roomno, max_qty, uses) VALUES (?, ?, ?)
+           ON CONFLICT(roomno) DO UPDATE SET max_qty=excluded.max_qty, uses=excluded.uses`
+        );
+        for (const r of rows) ins.run(normRoom(r.roomno), r.max_qty || 0, r.uses || 0);
+      });
+      replace(rs.recordset);
+      result.rooms = rs.recordset.length;
+    } catch (e) {
+      result.warnings.push('room: ' + e.message);
+    }
+  } finally {
+    await pool.close();
+  }
+  return result;
+}
+
 module.exports = {
   db,
+  mssqlConfig,
   currentSession,
   getSubjects,
   getSubject,
@@ -532,5 +1291,40 @@ module.exports = {
   deleteGroupChange,
   getMeta,
   syncMasterData,
-  exportToSqlServer
+  exportToSqlServer,
+
+  // Question-paper allotment (room-wise QP entry).
+  qp: {
+    campusId,
+    normRoom,
+    resolveSubject,
+    required,
+    examDates: qpExamDates,
+    subjectsForDate,
+    rowsFor,
+    subjectState,
+    isLocked,
+    totals,
+    upsertRow,
+    updateQty,
+    updateRoom,
+    getRow,
+    deleteRow,
+    clearSubject,
+    copySources,
+    seed,
+    fillFromMax,
+    roomSuggest,
+    checks,
+    finalise,
+    unlock,
+    finalisedRows,
+    dateSummary,
+    dateProgress,
+    orphanEntries,
+    lastActivity,
+    pendingExport,
+    exportToSqlServer: exportQpToSqlServer,
+    syncQpMaster
+  }
 };
