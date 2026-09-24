@@ -28,6 +28,26 @@ DB_PASSWORD=123
 PORT=3000
 ```
 
+## Daily start (Windows)
+Two batch files in `scripts\`, meant to be copied to the Desktop:
+
+- **`start-scriptcount.bat`** — starts the app under **pm2** in the background (no
+  console window) and opens `/qp` in the browser. Click it again later and it
+  *restarts* the app instead of starting a second copy, so a code change is picked up.
+- **`stop-scriptcount.bat`** — removes it from pm2, and also stops anything else left
+  holding the port (an `npm start` window, say). Entries live in
+  `data\scriptcount.db`, so stopping never loses anything.
+
+Needs pm2 once: `npm install -g pm2`.
+
+**Nothing is registered to launch at Windows boot.** The scripts never run
+`pm2 startup` or `pm2 save`, so the app runs only when you click the file.
+
+Both read `PORT` from `.env`; the app location is the `APPDIR` line at the top of each
+file. Pass `nobrowser` to start without opening a browser.
+
+Useful pm2 commands: `pm2 logs scriptcount`, `pm2 list`, `pm2 restart scriptcount`.
+
 ## Run
 ```
 npm install
