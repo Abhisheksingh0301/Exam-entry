@@ -185,6 +185,42 @@ Each date row also carries a plain status: *needs finalising*, *part done*,
 The date dropdown on the entry screen carries the same figure (`2026-05-13 · 2/7
 done`), so you can see where you stopped without leaving the page.
 
+### B.Com/BMS Report (`/qp/topsheet`)
+Replaces the old Crystal Reports QP top sheet for **B.Com and B.M.S.**: one
+**17 × 11 in landscape** page per room, filtered by **Department**, **Semester** and
+**Date of exam** (link: **B.Com/BMS Report** in the entry screen header). Print with the
+**Print** button (or Ctrl+P); the page size is set by the sheet itself, so choose the
+11×17 / Tabloid tray, landscape, and leave margins at *Default/None*. The department list
+is `TOPSHEET_DEPTS` in `db.js`.
+
+- **Pkt** = the room's position in the subject's room list (entry order).
+- **No. Of QPs** = entered QP + `QP_EXTRA` from `.env` (default 4), e.g. `40 + 4 = 44`.
+- **Year** on the *Semester* line is the last 4-digit number in the session name
+  (`April - June, 2026` → 2026).
+- Paper title, time and duration come from `TIME_TABLE` (`SUBTITLE`, `TIME_FROM`,
+  `TIME_TO`, `DURATION`) — run **Sync Master Data** once after upgrading to fill them.
+- Subjects not yet finalised still print, with a warning above the preview.
+- Fonts (Cooper Black, Wide Latin, Algerian, Bookman Old Style) are the Office fonts
+  already on this PC; on a PC without them the sheet falls back to standard fonts.
+
+```
+QP_EXTRA=4
+```
+
+### Reports menu
+Every report is reached from the **Reports ▾** dropdown in the header (entry screen and
+report pages). The list lives in `views/partials/reportsmenu.ejs` — add a line there
+when a new report is built.
+
+### Arts/Science Report (`/qp/artsreport`)
+Replaces the old Crystal room sheet for **BA/BSc, BMBT, M.A., M.Sc, MMFI, PG-DIPLOMA**
+(`ARTS_DEPTS` in `db.js`): one **17 × 11 in landscape** page per **room per exam date**,
+listing every subject sitting in that room with Dept, Subject, Sem,
+No. of QPs, Time, Duration and **No. of Scripts** (answer scripts per candidate, from
+`Script_per_candidate.TOTAL_SCRIPTS`), plus the room's Total QPs. Same filters as the
+B.Com/BMS report (multi-select Department, Semester, Date of exam). Rooms with more than 12
+subjects switch to a compact layout so one page still holds them.
+
 ### One allotment per subject
 `qp_rooms` and `qp_subjects` are keyed on **SESSN + SUBCODE + DEPT + SEM, without the
 exam date** -- deliberately, because `dbo.room` has no date column either. If a subject

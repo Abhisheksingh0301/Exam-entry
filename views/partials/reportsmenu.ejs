@@ -1,0 +1,35 @@
+<%#
+  "Reports" dropdown for page headers. Add a new report here and it shows up everywhere.
+  Locals: date (exam date to carry over, optional), current (href of the page showing, optional).
+%>
+<%
+  var REPORTS = [
+    { href: '/qp/topsheet',   label: 'B.Com/BMS Report',    note: 'QP top sheet, one page per room' },
+    { href: '/qp/artsreport', label: 'Arts/Science Report', note: 'Room sheet, one page per room per date' }
+  ];
+  var qs = typeof date !== 'undefined' && date ? '?date=' + encodeURIComponent(date) : '';
+  var here = typeof current !== 'undefined' ? current : '';
+%>
+<details class="reports-menu relative">
+  <summary class="list-none cursor-pointer border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold bg-white/15 text-white select-none">
+    Reports &#9662;
+  </summary>
+  <div class="absolute right-0 top-full mt-1 z-40 min-w-64 bg-white text-[#1f2733] border border-[#c7d0dc] rounded-md py-1 shadow-lg">
+    <% REPORTS.forEach(function (r) { %>
+      <a href="<%= r.href + qs %>"
+         class="block px-3.5 py-2 no-underline text-[#1f2733] hover:bg-[#eef4ff] <%= r.href === here ? 'bg-[#eef4ff]' : '' %>">
+        <span class="block text-[.9rem] font-semibold"><%= r.label %></span>
+        <span class="block text-[.75rem] text-slate-500"><%= r.note %></span>
+      </a>
+    <% }) %>
+  </div>
+</details>
+<script>
+  // Close the Reports menu when clicking elsewhere.
+  (function () {
+    var menu = document.currentScript.previousElementSibling;
+    document.addEventListener('click', function (e) {
+      if (!menu.contains(e.target)) menu.removeAttribute('open');
+    });
+  })();
+</script>

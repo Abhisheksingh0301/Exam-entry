@@ -29,6 +29,7 @@
       <a href="/" class="<%= btnGhost %> no-underline">Packet Entry</a>
       <a href="/qp/progress" class="<%= btnGhost %> no-underline">Progress</a>
       <a href="/qp/final?date=<%= date %>" class="<%= btnGhost %> no-underline">Finalised</a>
+      <%- include('partials/reportsmenu', { date: date }) %>
       <form method="post" action="/qp/sync" class="m-0"><button class="<%= btnPrimary %>" type="submit">Sync Master Data</button></form>
     </div>
   </header>

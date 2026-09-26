@@ -37,6 +37,10 @@ try {
   else if (cols.length && cols.indexOf('practical') === -1) {
     db.exec('ALTER TABLE subjects_cache ADD COLUMN practical INTEGER NOT NULL DEFAULT 0');
   }
+  // Paper title / time / duration added for the QP top sheet; blank until the next sync.
+  ['subtitle', 'time_from', 'time_to', 'duration'].forEach(function (c) {
+    if (cols.length && cols.indexOf(c) === -1) db.exec('ALTER TABLE subjects_cache ADD COLUMN ' + c + ' TEXT');
+  });
 } catch (e) { /* ignore */ }
 
 db.exec(`
@@ -55,6 +59,10 @@ db.exec(`
     sessn         TEXT,
     doe           TEXT,
     practical     INTEGER NOT NULL DEFAULT 0,   -- TIME_TABLE.Practical
+    subtitle      TEXT,                         -- TIME_TABLE.SUBTITLE (paper title)
+    time_from     TEXT,                         -- HH:MM, 24h
+    time_to       TEXT,
+    duration      TEXT,
     PRIMARY KEY (subcode, doe)
   );
 
@@ -447,7 +455,11 @@ async function syncMasterData() {
              ISNULL(s.TOTAL_SCRIPTS, 1)       AS total_scripts,
              t.SESSN                          AS sessn,
              CONVERT(char(10), t.DOE, 23)     AS doe,
-             CASE WHEN t.Practical = 1 THEN 1 ELSE 0 END AS practical
+             CASE WHEN t.Practical = 1 THEN 1 ELSE 0 END AS practical,
+             t.SUBTITLE                       AS subtitle,
+             CONVERT(char(5), t.TIME_FROM, 108) AS time_from,
+             CONVERT(char(5), t.TIME_TO, 108)   AS time_to,
+             t.DURATION                       AS duration
         FROM dbo.TIME_TABLE t
         LEFT JOIN dbo.Script_per_candidate s ON s.SUBJECT = t.SUBJECT
        WHERE t.SESSN = @sessn
@@ -457,12 +469,16 @@ async function syncMasterData() {
     const replace = db.transaction((rows, session) => {
       db.prepare('DELETE FROM subjects_cache').run();
       const ins = db.prepare(
-        `INSERT INTO subjects_cache (subcode, dept, semester, total_scripts, sessn, doe, practical)
-         VALUES (@subcode, @dept, @semester, @total_scripts, @sessn, @doe, @practical)
+        `INSERT INTO subjects_cache (subcode, dept, semester, total_scripts, sessn, doe, practical,
+                                     subtitle, time_from, time_to, duration)
+         VALUES (@subcode, @dept, @semester, @total_scripts, @sessn, @doe, @practical,
+                 @subtitle, @time_from, @time_to, @duration)
          ON CONFLICT(subcode, doe) DO UPDATE SET
            dept=excluded.dept, semester=excluded.semester,
            total_scripts=excluded.total_scripts, sessn=excluded.sessn,
-           practical=excluded.practical`
+           practical=excluded.practical, subtitle=excluded.subtitle,
+           time_from=excluded.time_from, time_to=excluded.time_to,
+           duration=excluded.duration`
       );
       for (const r of rows) {
         ins.run({
@@ -472,7 +488,11 @@ async function syncMasterData() {
           total_scripts: r.total_scripts || 1,
           sessn: r.sessn || session,
           doe: r.doe || null,
-          practical: r.practical ? 1 : 0
+          practical: r.practical ? 1 : 0,
+          subtitle: (r.subtitle || '').trim(),
+          time_from: r.time_from || null,
+          time_to: r.time_to || null,
+          duration: (r.duration || '').trim()
         });
       }
       setMeta('current_session', session);
@@ -1210,6 +1230,119 @@ async function exportQpToSqlServer(doe) {
 }
 
 /* ------------------------------------------------------------------ *
+ * B.Com/BMS report: QP top sheet, one printed page per room (replaces the Crystal report)
+ * ------------------------------------------------------------------ */
+
+// Spare QPs added to every room's packet ("40 + 4 = 44").
+const QP_EXTRA = parseInt(process.env.QP_EXTRA || '4', 10) || 0;
+
+// Departments each report covers (as spelt in TIME_TABLE.DEPARTMENT).
+const TOPSHEET_DEPTS = ['B.Com', 'B.M.S.'];
+const ARTS_DEPTS = ['BA/BSc', 'BMBT', 'M.A.', 'M.Sc', 'MMFI', 'PG-DIPLOMA'];
+
+function qpExtra() { return QP_EXTRA; }
+
+/** Filter choices for a report: its departments, plus sem / date values with rooms entered. */
+function reportFilters(depts) {
+  const rows = db.prepare(`
+    SELECT DISTINCT q.dept, q.sem, sc.doe
+      FROM qp_rooms q
+      JOIN subjects_cache sc ON sc.subcode = q.subcode AND TRIM(sc.dept) = q.dept
+                            AND COALESCE(sc.semester,'') = q.sem
+     WHERE q.qty > 0 AND sc.practical = 0
+       AND q.dept IN (SELECT value FROM json_each(@depts))
+  `).all({ depts: JSON.stringify(depts) });
+  const uniq = function (f) {
+    return rows.map(f).filter(function (v, i, a) { return v && a.indexOf(v) === i; }).sort();
+  };
+  return {
+    depts: depts.slice(),
+    sems: uniq(function (r) { return r.sem; }),
+    dates: uniq(function (r) { return r.doe; })
+  };
+}
+
+/**
+ * One entry per (subject, exam date) matching the filter, each with its rooms in
+ * entry order -- that order gives the packet number. Blank filters match all;
+ * f.depts is a list (multi-select), empty meaning every report department.
+ */
+function topSheets(f) {
+  const subs = db.prepare(`
+    SELECT DISTINCT q.sessn, q.subcode, q.dept, q.sem, sc.doe,
+           sc.subtitle, sc.time_from, sc.time_to, sc.duration,
+           COALESCE(s.status, 'draft') AS status
+      FROM qp_rooms q
+      JOIN subjects_cache sc ON sc.subcode = q.subcode AND TRIM(sc.dept) = q.dept
+                            AND COALESCE(sc.semester,'') = q.sem
+      LEFT JOIN qp_subjects s ON s.sessn = q.sessn AND s.subcode = q.subcode
+                             AND s.dept = q.dept AND s.sem = q.sem
+     WHERE q.qty > 0 AND sc.practical = 0
+       AND q.dept IN (SELECT value FROM json_each(@depts))
+       AND q.dept IN (SELECT value FROM json_each(@picked))
+       AND (@sem  = '' OR q.sem  = @sem)
+       AND (@doe  = '' OR sc.doe = @doe)
+     ORDER BY sc.doe, q.dept, q.sem, q.subcode
+  `).all({
+    picked: JSON.stringify(f.depts && f.depts.length ? f.depts : TOPSHEET_DEPTS),
+    sem: f.sem || '', doe: f.doe || '', depts: JSON.stringify(TOPSHEET_DEPTS)
+  });
+
+  const roomsOf = db.prepare(
+    `SELECT roomno, qty FROM qp_rooms
+      WHERE sessn=? AND subcode=? AND dept=? AND sem=? AND qty > 0 ORDER BY id`
+  );
+  return subs.map(function (s) {
+    s.rooms = roomsOf.all(s.sessn, s.subcode, s.dept, s.sem);
+    return s;
+  });
+}
+
+function topSheetFilters() { return reportFilters(TOPSHEET_DEPTS); }
+function artsFilters() { return reportFilters(ARTS_DEPTS); }
+
+/**
+ * Arts/Science report: one page per room per exam date, listing every subject
+ * sitting in that room that day. scripts = answer scripts per candidate
+ * (Script_per_candidate.TOTAL_SCRIPTS, cached as subjects_cache.total_scripts).
+ */
+function artsSheets(f) {
+  const rows = db.prepare(`
+    SELECT sc.doe, q.roomno, q.dept, q.sem, q.subcode, q.qty,
+           sc.subtitle, sc.time_from, sc.time_to, sc.duration,
+           sc.total_scripts AS scripts,
+           COALESCE(s.status, 'draft') AS status
+      FROM qp_rooms q
+      JOIN subjects_cache sc ON sc.subcode = q.subcode AND TRIM(sc.dept) = q.dept
+                            AND COALESCE(sc.semester,'') = q.sem
+      LEFT JOIN qp_subjects s ON s.sessn = q.sessn AND s.subcode = q.subcode
+                             AND s.dept = q.dept AND s.sem = q.sem
+     WHERE q.qty > 0 AND sc.practical = 0
+       AND q.dept IN (SELECT value FROM json_each(@depts))
+       AND q.dept IN (SELECT value FROM json_each(@picked))
+       AND (@sem = '' OR q.sem = @sem)
+       AND (@doe = '' OR sc.doe = @doe)
+     ORDER BY sc.doe, sc.time_from, q.dept, q.sem, q.subcode
+  `).all({
+    picked: JSON.stringify(f.depts && f.depts.length ? f.depts : ARTS_DEPTS),
+    sem: f.sem || '', doe: f.doe || '', depts: JSON.stringify(ARTS_DEPTS)
+  });
+
+  const byKey = new Map();
+  rows.forEach(function (r) {
+    const k = r.doe + '|' + r.roomno;
+    if (!byKey.has(k)) byKey.set(k, { doe: r.doe, roomno: r.roomno, rows: [], total: 0 });
+    const p = byKey.get(k);
+    p.rows.push(r);
+    p.total += r.qty;
+  });
+  return Array.from(byKey.values()).sort(function (a, b) {
+    return a.doe < b.doe ? -1 : a.doe > b.doe ? 1
+      : a.roomno.localeCompare(b.roomno, undefined, { numeric: true });
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * SQL Server -> SQLite cache (read-only; runs from Sync Master Data)
  * ------------------------------------------------------------------ */
 async function syncQpMaster() {
@@ -1325,6 +1458,11 @@ module.exports = {
     lastActivity,
     pendingExport,
     exportToSqlServer: exportQpToSqlServer,
+    qpExtra,
+    topSheetFilters,
+    topSheets,
+    artsFilters,
+    artsSheets,
     syncQpMaster
   }
 };

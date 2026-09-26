@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title><%= title %></title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/stylesheets/tailwind.css" />
+  <style>
+    /* ---- Printed sheet: 17 x 11 in landscape, one room per page (the old Crystal layout) ---- */
+    @page { size: 17in 11in; margin: 0; }
+
+    .sheet {
+      position: relative; width: 17in; height: 11in; box-sizing: border-box;
+      margin: 0 auto 24px; background: #fff; color: #000; overflow: hidden;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, .18);
+    }
+    .sheet .room {
+      position: absolute; right: 2.4in; top: .8in;
+      font: 700 26pt 'Bookman Old Style', 'Cooper Black', Georgia, serif; text-decoration: underline;
+    }
+    .sheet .pkt {
+      position: absolute; right: 2.4in; top: 1.45in;
+      font: 700 20pt 'Bookman Old Style', Georgia, serif; text-decoration: underline;
+    }
+    .sheet .dept {
+      position: absolute; left: 0; right: 0; top: .95in; text-align: center;
+      font: 400 60pt 'Cooper Black', 'Bookman Old Style', Georgia, serif;
+      text-decoration: underline; text-decoration-thickness: 4px; text-underline-offset: 6px;
+      text-shadow: 2px 2px 0 #888;
+    }
+    .sheet .sem {
+      position: absolute; left: 0; right: 0; top: 2.65in; text-align: center;
+      font: 400 32pt Algerian, 'Copperplate Gothic Bold', Georgia, serif;
+      text-decoration: underline; text-shadow: 1px 1px 0 #888; letter-spacing: 1px;
+    }
+    .sheet .code {
+      position: absolute; left: 0; right: 0; top: 3.3in; text-align: center;
+      font: 400 50pt 'Wide Latin', 'Arial Black', sans-serif; white-space: nowrap;
+      text-decoration: underline; text-decoration-thickness: 5px; text-underline-offset: 6px;
+    }
+    .sheet .title {
+      position: absolute; left: 1.5in; right: 1.5in; top: 4.6in; text-align: center;
+      font: 700 20pt 'Century Gothic', 'Trebuchet MS', Arial, sans-serif;
+    }
+    .sheet .when {
+      position: absolute; left: 4.6in; top: 6.1in; width: auto; border-collapse: collapse;
+      font: 700 19pt 'Trebuchet MS', Verdana, sans-serif;
+    }
+    .sheet .when td { padding: 1px 14px 1px 0; border: 0; white-space: nowrap; }
+    .sheet .box {
+      position: absolute; left: 4.6in; top: 7.5in; width: 7.4in; border-collapse: collapse;
+      font: 700 19pt 'Bookman Old Style', Georgia, serif;
+    }
+    .sheet .box td { border: 2px solid #000; padding: 12px 20px; height: .6in; white-space: nowrap; }
+    .sheet .box td + td { text-align: center; font-family: 'Trebuchet MS', Verdana, sans-serif; }
+    .sheet .strip {
+      position: absolute; left: .6in; top: 2.3in; white-space: nowrap;
+      border-left: 5px solid #000; padding-left: 4px;
+      writing-mode: vertical-rl; text-align: center;
+      font: 400 36pt 'Wide Latin', 'Arial Black', sans-serif;
+    }
+
+    /* Preview on screen at reduced size so a 17in sheet fits the window. */
+    @media screen { .sheet { zoom: .6; } }
+
+    @media print {
+      html, body, main { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+      .no-print { display: none !important; }
+      .sheet { margin: 0; box-shadow: none; break-after: page; }
+      .sheet:last-child { break-after: auto; }
+    }
+  </style>
+</head>
+<%
+  var btnGhost = 'border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer bg-white/15 text-white no-underline';
+  var pages = sheets.reduce(function (n, s) { return n + s.rooms.length; }, 0);
+  var drafts = sheets.filter(function (s) { return s.status === 'draft'; });
+  var noTitle = sheets.filter(function (s) { return !s.subtitle && !s.time_from; });
+%>
+<body class="m-0 bg-[#eef1f6] text-[#1f2733]">
+  <header class="no-print flex justify-between items-center gap-4 flex-wrap bg-[#1f3a5f] text-white px-5.5 py-3.5">
+    <div>
+      <h1 class="text-[1.15rem] font-semibold m-0"><%= title %></h1>
+      <div class="text-[.8rem] opacity-90 mt-0.75">
+        Session: <strong><%= session %></strong> &nbsp;|&nbsp; Page: <strong>17 &times; 11 in landscape</strong>
+        &nbsp;|&nbsp; Extra QPs per room: <strong><%= extra %></strong>
+      </div>
+    </div>
+    <div class="flex gap-2.5">
+      <a href="/qp<%= f.doe ? '?date=' + f.doe : '' %>" class="<%= btnGhost %>">&larr; Back to entry</a>
+      <a href="/qp/progress" class="<%= btnGhost %>">Progress</a>
+      <%- include('partials/reportsmenu', { date: f.doe, current: '/qp/topsheet' }) %>
+    </div>
+  </header>
+
+  <main class="px-5.5 py-4.5">
+    <%- include('partials/reportfilter', {
+      action: '/qp/topsheet', filters: filters, f: f, any: any, pages: pages,
+      summary: '<strong>' + sheets.length + '</strong> subject(s), <strong>' + pages + '</strong> room sheet(s)'
+    }) %>
+
+    <% if (drafts.length) { %>
+      <div class="no-print bg-[#fff8e8] border border-[#f0d9a4] text-[#8a5a00] rounded-[10px] px-4.5 py-3 mb-4.5 text-[.88rem]">
+        <strong><%= drafts.length %></strong> subject(s) here are not finalised yet, so their counts may still change:
+        <%= drafts.map(function (s) { return s.subcode; }).join(', ') %>
+      </div>
+    <% } %>
+    <% if (noTitle.length) { %>
+      <div class="no-print bg-[#fdecec] border border-[#f1c0c0] text-[#9a2626] rounded-[10px] px-4.5 py-3 mb-4.5 text-[.88rem]">
+        Paper title / time missing for <strong><%= noTitle.length %></strong> subject(s). Run <strong>Sync Master Data</strong> on the entry screen once to fill them in.
+      </div>
+    <% } %>
+    <% if (any && !pages) { %>
+      <div class="no-print text-center text-slate-500 py-10">No rooms entered for this filter.</div>
+    <% } %>
+
+    <% sheets.forEach(function (s) { s.rooms.forEach(function (r, i) { %>
+      <section class="sheet">
+        <div class="room"><%= r.roomno %></div>
+        <div class="pkt">Pkt : <%= i + 1 %></div>
+        <div class="dept"><%= s.dept %></div>
+        <div class="sem">Semester - <%= s.sem %><%= s.year ? ', ' + s.year : '' %></div>
+        <div class="code"><%= s.subcode %></div>
+        <div class="title"><%= (s.subtitle || '').toUpperCase() %></div>
+        <table class="when">
+          <tr><td>Date</td><td>:</td><td><%= s.dateText %></td></tr>
+          <tr><td>Time</td><td>:</td><td><%= s.timeText %></td></tr>
+          <tr><td>Duration</td><td>:</td><td><%= s.duration %></td></tr>
+        </table>
+        <table class="box">
+          <tr><td>Room No.</td><td><%= r.roomno %></td></tr>
+          <tr><td>No. Of QPs</td><td><%= r.qty %> + <%= extra %> = <%= r.qty + extra %></td></tr>
+        </table>
+        <div class="strip"><%= s.subcode %></div>
+      </section>
+    <% }) }) %>
+  </main>
+</body>
+</html>

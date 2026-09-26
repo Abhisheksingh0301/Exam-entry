@@ -88,6 +88,87 @@ router.get('/qp/final', function (req, res) {
   });
 });
 
+/* ---------------------------------------------------------------- *
+ * Printed reports (17x11 landscape), filtered by dept / sem / exam date
+ * ---------------------------------------------------------------- */
+var DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+              'August', 'September', 'October', 'November', 'December'];
+
+function longDate(doe) {                       // 2026-04-25 -> Saturday, April 25, 2026
+  var p = String(doe || '').split('-').map(Number);
+  if (p.length !== 3) return doe || '';
+  var d = new Date(p[0], p[1] - 1, p[2]);
+  return DAYS[d.getDay()] + ', ' + MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+}
+
+function clock(hhmm) {                         // 09:00 -> 9:00AM
+  var m = /^(\d{1,2}):(\d{2})/.exec(hhmm || '');
+  if (!m) return '';
+  var h = parseInt(m[1], 10);
+  return ((h % 12) || 12) + ':' + m[2] + (h < 12 ? 'AM' : 'PM');
+}
+
+function shortDate(doe) {                      // 2026-05-08 -> 08-May-2026
+  var p = String(doe || '').split('-');
+  if (p.length !== 3) return doe || '';
+  return p[2] + '-' + MONTHS[parseInt(p[1], 10) - 1].slice(0, 3) + '-' + p[0];
+}
+
+function timeText(r) {
+  return r.time_from ? clock(r.time_from) + ' To ' + clock(r.time_to) : '';
+}
+
+/* dept may repeat (multi-select); blank filters match all. */
+function reportFilter(req) {
+  return {
+    depts: [].concat(req.query.dept || []).map(function (d) { return String(d).trim(); }).filter(Boolean),
+    sem: (req.query.sem || '').trim(),
+    doe: (req.query.date || '').trim()
+  };
+}
+
+/* B.Com/BMS: one page per room of each subject (QP top sheet). */
+router.get('/qp/topsheet', function (req, res) {
+  var f = reportFilter(req);
+  var any = f.depts.length || f.sem || f.doe;
+  var sheets = any ? qp.topSheets(f) : [];
+  sheets.forEach(function (s) {
+    var y = /(\d{4})\s*$/.exec(s.sessn || '');  // "April - June, 2026" -> 2026
+    s.year = y ? y[1] : '';
+    s.dateText = longDate(s.doe);
+    s.timeText = timeText(s);
+  });
+  res.render('qptopsheet', {
+    title: 'B.Com/BMS Report',
+    session: data.currentSession(),
+    filters: qp.topSheetFilters(),
+    f: f,
+    any: any,
+    sheets: sheets,
+    extra: qp.qpExtra()
+  });
+});
+
+/* Arts/Science: one page per room per exam date, every subject in that room. */
+router.get('/qp/artsreport', function (req, res) {
+  var f = reportFilter(req);
+  var any = f.depts.length || f.sem || f.doe;
+  var sheets = any ? qp.artsSheets(f) : [];
+  sheets.forEach(function (p) {
+    p.dateText = shortDate(p.doe);
+    p.rows.forEach(function (r) { r.timeText = timeText(r); });
+  });
+  res.render('qparts', {
+    title: 'Arts/Science Report',
+    session: data.currentSession(),
+    filters: qp.artsFilters(),
+    f: f,
+    any: any,
+    sheets: sheets
+  });
+});
+
 /* Push finalised subjects to dbo.room (delete-then-insert per subject). */
 router.post('/qp/export', function (req, res) {
   var date = (req.body.date || '').trim();

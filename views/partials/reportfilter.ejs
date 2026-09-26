@@ -1,0 +1,62 @@
+<%#
+  Filter bar shared by the printed reports.
+  Locals: action (form URL), filters {depts, sems, dates}, f {depts, sem, doe},
+          any (a filter is set), pages (sheet count), summary (text next to Print).
+%>
+<%
+  function sel(name, label, values, current) { %>
+    <label class="flex flex-col gap-1 text-[.78rem] font-semibold text-slate-600">
+      <%= label %>
+      <select name="<%= name %>" class="border border-[#c7d0dc] rounded-md px-2.5 py-2 text-[.9rem] bg-white min-w-40">
+        <option value="">All</option>
+        <% values.forEach(function (v) { %>
+          <option value="<%= v %>" <%= v === current ? 'selected' : '' %>><%= v %></option>
+        <% }) %>
+      </select>
+    </label>
+<% } %>
+<form method="get" action="<%= action %>"
+      class="no-print flex flex-wrap items-end gap-3.5 bg-white border border-[#dde3eb] rounded-[10px] px-4.5 py-3.5 mb-4.5">
+  <div class="flex flex-col gap-1 text-[.78rem] font-semibold text-slate-600">
+    Department
+    <details class="dept-pick relative">
+      <summary class="list-none cursor-pointer border border-[#c7d0dc] rounded-md px-2.5 py-2 text-[.9rem] font-normal text-[#1f2733] bg-white min-w-40 flex justify-between gap-3">
+        <span><%= f.depts.length && f.depts.length < filters.depts.length ? f.depts.join(', ') : 'All' %></span><span>&#9662;</span>
+      </summary>
+      <div class="absolute z-30 top-full left-0 mt-0.5 min-w-full bg-white border border-[#c7d0dc] rounded-md py-1 shadow-lg">
+        <% filters.depts.forEach(function (d) { %>
+          <label class="flex items-center gap-2 px-3 py-1.5 text-[.9rem] font-normal text-[#1f2733] cursor-pointer whitespace-nowrap hover:bg-[#eef4ff]">
+            <input type="checkbox" name="dept" value="<%= d %>" <%= f.depts.indexOf(d) !== -1 ? 'checked' : '' %> /> <%= d %>
+          </label>
+        <% }) %>
+      </div>
+    </details>
+  </div>
+  <% sel('sem', 'Semester', filters.sems, f.sem) %>
+  <% sel('date', 'Date of exam', filters.dates, f.doe) %>
+  <button type="submit" class="border-0 rounded-md px-4 py-2.25 text-[.9rem] font-semibold cursor-pointer bg-[#1f3a5f] text-white">Show</button>
+  <% if (pages) { %>
+    <button type="button" onclick="window.print()"
+            class="border-0 rounded-md px-4 py-2.25 text-[.9rem] font-semibold cursor-pointer bg-[#1e6b26] text-white">Print <%= pages %> page(s)</button>
+  <% } %>
+  <div class="text-[.85rem] text-slate-600 ml-auto">
+    <% if (any) { %><%- summary %><% } else { %>Pick at least one filter.<% } %>
+  </div>
+</form>
+<script>
+  // Department picker: show the ticked names, close when clicking elsewhere.
+  (function () {
+    var pick = document.querySelector('.dept-pick');
+    if (!pick) return;
+    var label = pick.querySelector('summary span');
+    var boxes = pick.querySelectorAll('input[type=checkbox]');
+    pick.addEventListener('change', function () {
+      var on = Array.prototype.filter.call(boxes, function (b) { return b.checked; })
+                    .map(function (b) { return b.value; });
+      label.textContent = on.length && on.length < boxes.length ? on.join(', ') : 'All';
+    });
+    document.addEventListener('click', function (e) {
+      if (!pick.contains(e.target)) pick.removeAttribute('open');
+    });
+  })();
+</script>
