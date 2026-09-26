@@ -54,7 +54,7 @@ npm install
 npm run build:css   # compile Tailwind -> public/stylesheets/tailwind.css
 npm start
 ```
-Open http://localhost:3000
+Open http://localhost:3010
 
 ## Styling (Tailwind v4)
 Layout/form markup uses inline Tailwind utility classes in the EJS views; the few
