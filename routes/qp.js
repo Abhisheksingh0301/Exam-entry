@@ -79,6 +79,7 @@ router.get('/qp/final', function (req, res) {
   var date = (req.query.date || '').trim();
   res.render('qpfinal', {
     title: 'Finalised Allotment',
+    session: data.currentSession(),
     date: date,
     dates: qp.examDates(),
     rows: qp.finalisedRows(date),
@@ -313,6 +314,17 @@ router.post('/api/qp/finalise', function (req, res) {
   res.json(Object.assign({
     ok: r.ok, needsConfirm: !!r.needsConfirm, problems: r.problems
   }, subjectPayload(k)));
+});
+
+/* Finalise every draft subject on a date. apply=false is a dry run. */
+router.post('/api/qp/finalise-all', function (req, res) {
+  var doe = (req.body.doe || '').trim();
+  if (!doe) return res.status(400).json({ error: 'No date given.' });
+  var report = qp.finaliseAll(doe, !!req.body.apply);
+  res.json(Object.assign({ ok: true, applied: !!req.body.apply }, report, {
+    subjects: qp.subjectsForDate(doe),
+    summary: qp.dateSummary(doe)
+  }));
 });
 
 router.post('/api/qp/unlock', function (req, res) {

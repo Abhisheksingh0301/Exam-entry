@@ -25,6 +25,7 @@
   var clearBtn = document.getElementById('clearBtn');
   var unlockBtn = document.getElementById('unlockBtn');
   var finaliseBtn = document.getElementById('finaliseBtn');
+  var finaliseAllBtn = document.getElementById('finaliseAllBtn');
 
   var ctxCode = document.getElementById('ctxCode');
   var ctxMeta = document.getElementById('ctxMeta');
@@ -533,6 +534,60 @@
   }
 
   finaliseBtn.addEventListener('click', function () { finalise(false); });
+
+  // Dry run first, show what will happen, then finalise everything that has no errors.
+  function finaliseAll() {
+    if (!state.date) return;
+    postJson('/api/qp/finalise-all', { doe: state.date, apply: false })
+      .then(function (d) {
+        if (!d.finalised.length) {
+          showAllReport(d);
+          say('Nothing to finalise — see below.', 'err');
+          return;
+        }
+        var lines = [d.finalised.length + ' subject(s) will be finalised.'];
+        if (d.warned.length) {
+          lines.push('', 'With warnings:');
+          d.warned.forEach(function (w) {
+            lines.push('• ' + w.subcode + ': ' + w.problems.map(function (p) { return p.msg; }).join(' '));
+          });
+        }
+        if (d.blocked.length) lines.push('', d.blocked.length + ' subject(s) have errors and will be skipped.');
+        if (d.empty.length) lines.push(d.empty.length + ' subject(s) have no rooms and will be skipped.');
+        if (!confirm('Finalise all?\n\n' + lines.join('\n'))) { say('Not finalised.', 'err'); return; }
+
+        return postJson('/api/qp/finalise-all', { doe: state.date, apply: true }).then(function (r) {
+          state.subjects = r.subjects || [];
+          state.summary = r.summary;
+          renderRail();
+          showAllReport(r);
+          say(r.finalised.length + ' subject(s) finalised.' +
+              (r.blocked.length ? ' ' + r.blocked.length + ' skipped — see below.' : ''), 'ok');
+          if (state.current) {
+            var keep = problemsEl.innerHTML;
+            selectSubject(state.current.subcode).then(function () {
+              problemsEl.innerHTML = keep;
+              problemsEl.hidden = !keep;
+            });
+          }
+        });
+      })
+      .catch(function (e) { say(e.message, 'err'); });
+  }
+
+  // Errors of the subjects that were skipped, so they can be fixed one by one.
+  function showAllReport(d) {
+    var list = [];
+    d.blocked.forEach(function (b) {
+      b.problems.filter(function (p) { return p.level === 'error'; }).forEach(function (p) {
+        list.push({ level: 'error', msg: b.subcode + ': ' + p.msg });
+      });
+    });
+    if (d.empty.length) list.push({ level: 'warn', msg: 'No rooms entered: ' + d.empty.join(', ') });
+    renderProblems(list);
+  }
+
+  finaliseAllBtn.addEventListener('click', finaliseAll);
 
   /* ---------------- global keys ---------------- */
 

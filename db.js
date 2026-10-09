@@ -219,6 +219,9 @@ function currentSession() {
   return getMeta('current_session') || '';
 }
 
+// SQL for "the session last synced" -- every list and report shows only this one.
+const CUR_SESSN = `(SELECT value FROM meta WHERE key = 'current_session')`;
+
 function getSubjects() {
   // Distinct subjects (a subject may span several exam dates in the cache).
   return db
@@ -357,7 +360,7 @@ function searchPackets(term, limit = 500) {
   return db
     .prepare(
       `SELECT * FROM packets
-        WHERE subcode LIKE ?
+        WHERE subcode LIKE ? AND sessn = ${CUR_SESSN}
         ORDER BY subcode, paper_type, pkt_no, groups
         LIMIT ?`
     )
@@ -366,14 +369,15 @@ function searchPackets(term, limit = 500) {
 
 function recentPackets(limit = 20) {
   return db
-    .prepare('SELECT * FROM packets ORDER BY id DESC LIMIT ?')
+    .prepare(`SELECT * FROM packets WHERE sessn = ${CUR_SESSN} ORDER BY id DESC LIMIT ?`)
     .all(limit);
 }
 
 function stats() {
-  const total = db.prepare('SELECT COUNT(*) c FROM packets').get().c;
-  const pending = db.prepare('SELECT COUNT(*) c FROM packets WHERE exported = 0').get().c;
-  const scripts = db.prepare('SELECT COALESCE(SUM(no_of_scripts),0) s FROM packets').get().s;
+  const cur = `FROM packets WHERE sessn = ${CUR_SESSN}`;
+  const total = db.prepare(`SELECT COUNT(*) c ${cur}`).get().c;
+  const pending = db.prepare(`SELECT COUNT(*) c ${cur} AND exported = 0`).get().c;
+  const scripts = db.prepare(`SELECT COALESCE(SUM(no_of_scripts),0) s ${cur}`).get().s;
   return { total, pending, exported: total - pending, scripts, pendingChanges: pendingGroupChangeCount() };
 }
 
@@ -510,7 +514,9 @@ async function syncMasterData() {
  * SQL Server: push pending packets -> dbo.Script_Count
  * ------------------------------------------------------------------ */
 async function exportToSqlServer() {
-  const pending = db.prepare('SELECT * FROM packets WHERE exported = 0 ORDER BY id').all();
+  const pending = db.prepare(
+    `SELECT * FROM packets WHERE exported = 0 AND sessn = ${CUR_SESSN} ORDER BY id`
+  ).all();
   const pendingChanges = db.prepare('SELECT * FROM group_changes WHERE exported = 0 ORDER BY id').all();
   if (pending.length === 0 && pendingChanges.length === 0) {
     return { inserted: 0, updated: 0, failed: 0, total: 0, groupsUpdated: 0, groupsFailed: 0, errors: [] };
@@ -952,7 +958,7 @@ function checks(k) {
   }
 
   if (!req) {
-    err('No record in Count for campus ' + CAMPUS_ID + ' — the required figure is unknown.');
+    warn('No record in Count for campus ' + CAMPUS_ID + ' — the required figure is unknown, so the total cannot be checked.');
   } else {
     const allotted = rows.reduce(function (s, r) { return s + r.qty; }, 0);
     if (allotted < req.total) {
@@ -1020,6 +1026,33 @@ function finalise(k, opts) {
   return { ok: true, problems: problems };
 }
 
+/**
+ * Finalise every draft subject on `doe` in one go. Without `apply` it is a dry
+ * run: each subject is checked and sorted into ready / warned / blocked. With
+ * `apply`, every subject that has no errors is finalised (warnings accepted);
+ * blocked ones are left as drafts and reported back.
+ */
+function finaliseAll(doe, apply) {
+  const report = { finalised: [], warned: [], blocked: [], empty: [] };
+  const drafts = subjectsForDate(doe).filter(function (s) { return s.status === 'draft'; });
+
+  const run = db.transaction(function () {
+    drafts.forEach(function (s) {
+      const k = { sessn: s.sessn, subcode: s.subcode, dept: s.dept, sem: s.sem, doe: s.doe };
+      if (!s.rooms) { report.empty.push(s.subcode); return; }
+      const problems = checks(k);
+      const errors = problems.filter(function (p) { return p.level === 'error'; });
+      const entry = { subcode: s.subcode, problems: problems };
+      if (errors.length) { report.blocked.push(entry); return; }
+      if (problems.length) report.warned.push(entry);
+      if (apply) finalise(k, { acceptWarnings: true });
+      report.finalised.push(s.subcode);
+    });
+  });
+  run();
+  return report;
+}
+
 /** Re-open a finalised subject for correction. */
 function unlock(k) {
   return db.prepare(`
@@ -1032,6 +1065,12 @@ function unlock(k) {
  * Finalised data, ready for a later export to SQL Server
  * ------------------------------------------------------------------ */
 
+// Current session only: the subject's paper code + DOE must be in the synced
+// timetable (subjects_cache holds just the current session).
+const IN_CURRENT_SESSION = `
+  EXISTS (SELECT 1 FROM subjects_cache c
+           WHERE c.sessn = s.sessn AND c.subcode = s.subcode AND c.doe = s.doe)`;
+
 /** Column-for-column with dbo.room. Nothing here is pushed automatically. */
 function finalisedRows(doe) {
   return db.prepare(`
@@ -1042,6 +1081,7 @@ function finalisedRows(doe) {
       JOIN qp_subjects s ON s.sessn=q.sessn AND s.subcode=q.subcode
                         AND s.dept=q.dept  AND s.sem=q.sem
      WHERE s.status IN ('final','exported')
+       AND ${IN_CURRENT_SESSION}
        AND (@doe IS NULL OR s.doe = @doe)
      ORDER BY s.doe, q.subcode, q.id
   `).all({ doe: doe || null });
@@ -1121,7 +1161,8 @@ function orphanEntries() {
       LEFT JOIN qp_subjects s
              ON s.sessn = q.sessn AND s.subcode = q.subcode
             AND s.dept = q.dept AND s.sem = q.sem
-     WHERE sc.subcode IS NULL OR sc.practical = 1 OR c.subcode IS NULL
+     WHERE q.sessn = ${CUR_SESSN}
+       AND (sc.subcode IS NULL OR sc.practical = 1 OR c.subcode IS NULL)
      GROUP BY q.doe, q.subcode, q.dept, q.sem, s.status, reason
      ORDER BY q.doe, q.subcode
   `).all({ campus: CAMPUS_ID });
@@ -1130,7 +1171,7 @@ function orphanEntries() {
 /** When any QP row was last added or changed, across every date. */
 function lastActivity() {
   const r = db.prepare(
-    'SELECT MAX(COALESCE(updated_at, created_at)) AS at FROM qp_rooms'
+    `SELECT MAX(COALESCE(updated_at, created_at)) AS at FROM qp_rooms WHERE sessn = ${CUR_SESSN}`
   ).get();
   return r ? r.at : null;
 }
@@ -1148,6 +1189,7 @@ function pendingExport(doe) {
       LEFT JOIN qp_rooms q ON q.sessn=s.sessn AND q.subcode=s.subcode
                           AND q.dept=s.dept  AND q.sem=s.sem
      WHERE s.status = 'final'
+       AND ${IN_CURRENT_SESSION}
        AND (@doe IS NULL OR s.doe = @doe)
      GROUP BY s.sessn, s.subcode, s.dept, s.sem, s.doe
      ORDER BY s.doe, s.subcode
@@ -1248,7 +1290,7 @@ function reportFilters(depts) {
     SELECT DISTINCT q.dept, q.sem, sc.doe
       FROM qp_rooms q
       JOIN subjects_cache sc ON sc.subcode = q.subcode AND TRIM(sc.dept) = q.dept
-                            AND COALESCE(sc.semester,'') = q.sem
+                            AND COALESCE(sc.semester,'') = q.sem AND sc.sessn = q.sessn
      WHERE q.qty > 0 AND sc.practical = 0
        AND q.dept IN (SELECT value FROM json_each(@depts))
   `).all({ depts: JSON.stringify(depts) });
@@ -1274,7 +1316,7 @@ function topSheets(f) {
            COALESCE(s.status, 'draft') AS status
       FROM qp_rooms q
       JOIN subjects_cache sc ON sc.subcode = q.subcode AND TRIM(sc.dept) = q.dept
-                            AND COALESCE(sc.semester,'') = q.sem
+                            AND COALESCE(sc.semester,'') = q.sem AND sc.sessn = q.sessn
       LEFT JOIN qp_subjects s ON s.sessn = q.sessn AND s.subcode = q.subcode
                              AND s.dept = q.dept AND s.sem = q.sem
      WHERE q.qty > 0 AND sc.practical = 0
@@ -1314,7 +1356,7 @@ function artsSheets(f) {
            COALESCE(s.status, 'draft') AS status
       FROM qp_rooms q
       JOIN subjects_cache sc ON sc.subcode = q.subcode AND TRIM(sc.dept) = q.dept
-                            AND COALESCE(sc.semester,'') = q.sem
+                            AND COALESCE(sc.semester,'') = q.sem AND sc.sessn = q.sessn
       LEFT JOIN qp_subjects s ON s.sessn = q.sessn AND s.subcode = q.subcode
                              AND s.dept = q.dept AND s.sem = q.sem
      WHERE q.qty > 0 AND sc.practical = 0
@@ -1450,6 +1492,7 @@ module.exports = {
     roomSuggest,
     checks,
     finalise,
+    finaliseAll,
     unlock,
     finalisedRows,
     dateSummary,

@@ -12,7 +12,7 @@
     <div>
       <h1 class="text-[1.15rem] font-semibold m-0">Finalised Allotment</h1>
       <div class="text-[.8rem] opacity-90 mt-0.75">
-        Locked rows, column-for-column with <code>dbo.room</code>.
+        Session <strong><%= session || '—' %></strong> &middot; locked rows, column-for-column with <code>dbo.room</code>.
         <% var pendRooms = pending.reduce(function (s, p) { return s + p.rooms; }, 0); %>
         <% if (pending.length) { %>
           <strong><%= pending.length %></strong> subject(s) / <strong><%= pendRooms %></strong> row(s) waiting to be exported.
