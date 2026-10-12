@@ -632,7 +632,7 @@ const CAMPUS_ID = parseInt(process.env.CAMPUS_ID || '1', 10);
 
 // Column widths of dbo.room — checked before a subject is finalised so a later
 // export cannot truncate or fail.
-const LIMITS = { roomno: 50, subcode: 12, dept: 50, sem: 5 };
+const LIMITS = { roomno: 50, subcode: 20, dept: 50, sem: 5 };
 
 /* ------------------------------------------------------------------ *
  * Helpers
@@ -1239,7 +1239,7 @@ async function exportQpToSqlServer(doe) {
 
         await new sql.Request(tx)
           .input('sessn', sql.VarChar(50), s.sessn)
-          .input('subcode', sql.NVarChar(12), s.subcode)
+          .input('subcode', sql.NVarChar(LIMITS.subcode), s.subcode)
           .input('dept', sql.NVarChar(50), s.dept)
           .input('sem', sql.NVarChar(5), s.sem)
           .query(`DELETE FROM dbo.room
@@ -1251,7 +1251,7 @@ async function exportQpToSqlServer(doe) {
             .input('dept', sql.NVarChar(50), s.dept)
             .input('sem', sql.NVarChar(5), s.sem)
             .input('qty', sql.Int, r.qty)
-            .input('subcode', sql.NVarChar(12), s.subcode)
+            .input('subcode', sql.NVarChar(LIMITS.subcode), s.subcode)
             .input('sessn', sql.VarChar(50), s.sessn)
             .query(`INSERT INTO dbo.room (ROOMNO, DEPT, SEM, QTY, SUBCODE, SESSN)
                     VALUES (@roomno, @dept, @sem, @qty, @subcode, @sessn)`);
