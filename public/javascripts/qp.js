@@ -6,6 +6,7 @@
   var dateSel = document.getElementById('dateSel');
   var railEl = document.getElementById('rail');
   var railSummaryEl = document.getElementById('railSummary');
+  var railFilterEl = document.getElementById('railFilter');
   var unplannedWrap = document.getElementById('unplannedWrap');
   var unplannedToggle = document.getElementById('unplannedToggle');
   var unplannedEl = document.getElementById('unplanned');
@@ -28,6 +29,7 @@
   var finaliseAllBtn = document.getElementById('finaliseAllBtn');
 
   var ctxCode = document.getElementById('ctxCode');
+  var ctxName = document.getElementById('ctxName');
   var ctxMeta = document.getElementById('ctxMeta');
   var ctxDept = document.getElementById('ctxDept');
   var ctxSem = document.getElementById('ctxSem');
@@ -104,6 +106,16 @@
     return 0;
   }
 
+  function bySubcode(a, b) {
+    return a.subcode < b.subcode ? -1 : a.subcode > b.subcode ? 1 : 0;
+  }
+
+  function groupKey(s) { return s.dept + '|' + s.sem; }
+
+  function groupLabel(s) {
+    return esc(s.dept || 'No dept') + (s.sem ? ' &middot; Sem ' + esc(s.sem) : '');
+  }
+
   function railItem(s) {
     var st = railStatus(s);
     var isCur = state.current && s.subcode === state.current.subcode &&
@@ -112,25 +124,61 @@
       ? '<small class="text-slate-400">no count</small>'
       : '<small class="tabular-nums">' + s.allotted + '<span class="text-slate-400">/' + s.req_total + '</span></small>';
     return '<li><button type="button" class="rail-item' + (isCur ? ' active' : '') + '"' +
-           ' data-sub="' + esc(s.subcode) + '">' +
+           ' data-sub="' + esc(s.subcode) + '" title="' + esc(s.subcode + ' — ' + (s.subtitle || '')) + '">' +
            '<span class="dot dot-' + st + '"></span>' +
-           '<span class="min-w-0 flex-1"><b class="block truncate">' + esc(s.subcode) + '</b>' +
-           '<span class="block text-[.7rem] text-slate-500 truncate">' + esc(s.dept) +
-           (s.sem ? ' &middot; ' + esc(s.sem) : '') + '</span></span>' +
+           '<span class="min-w-0 flex-1"><span class="rail-code block truncate">' + esc(s.subcode) + '</span>' +
+           '<span class="rail-name">' + esc(s.subtitle || '—') + '</span></span>' +
            badge + '</button></li>';
+  }
+
+  // Collapsed dept groups survive reloads; an operator usually works one dept at a time.
+  var closedGroups = {};
+  try { closedGroups = JSON.parse(localStorage.getItem('qp.closedGroups') || '{}') || {}; } catch (e) { /* ignore */ }
+
+  function railQuery() {
+    return railFilterEl.value.trim().toUpperCase().replace(/\s+/g, ' ');
+  }
+
+  function matches(s, q) {
+    if (!q) return true;
+    return s.subcode.toUpperCase().indexOf(q.replace(/ /g, '')) !== -1 ||
+           (s.subtitle || '').toUpperCase().indexOf(q) !== -1;
+  }
+
+  /** Subjects as dept/sem groups (dept order, then sem), each group sorted by `sortFn`. */
+  function groupHtml(list, prefix, sortFn) {
+    var groups = {}, order = [], q = railQuery();
+    list.forEach(function (s) {
+      var g = groupKey(s);
+      if (!groups[g]) { groups[g] = []; order.push(g); }
+      groups[g].push(s);
+    });
+    order.sort();
+    return order.map(function (g) {
+      var all = groups[g];
+      var shown = all.filter(function (s) { return matches(s, q); }).sort(sortFn);
+      if (!shown.length) return '';
+      var done = all.filter(function (s) { return s.status === 'final' || s.status === 'exported'; }).length;
+      var hasCur = state.current && all.some(function (s) { return s.subcode === state.current.subcode; });
+      var closed = closedGroups[prefix + g] && !q && !hasCur;
+      return '<li class="rail-group' + (closed ? ' closed' : '') + '">' +
+             '<button type="button" class="rail-group-head" data-group="' + esc(prefix + g) + '">' +
+             '<span class="caret">&#9662;</span>' + groupLabel(all[0]) +
+             '<small>' + (prefix ? all.length : done + '/' + all.length) + '</small></button>' +
+             '<ul>' + shown.map(railItem).join('') + '</ul></li>';
+    }).join('');
   }
 
   function renderRail() {
     var planned = state.subjects.filter(function (s) { return s.req_total != null; });
     var unplanned = state.subjects.filter(function (s) { return s.req_total == null; });
 
-    planned.sort(function (a, b) {
-      return railRank(a) - railRank(b) || (a.subcode < b.subcode ? -1 : a.subcode > b.subcode ? 1 : 0);
-    });
-
-    railEl.innerHTML = planned.length
-      ? planned.map(railItem).join('')
-      : '<li class="text-[.8rem] text-slate-400 py-2">No subjects with a count on this date.</li>';
+    // Unfinished subjects float to the top of each group; the rest keep code order.
+    var html = groupHtml(planned, '', function (a, b) { return railRank(a) - railRank(b) || bySubcode(a, b); });
+    railEl.innerHTML = html ||
+      '<li class="text-[.8rem] text-slate-400 py-2">' +
+      (planned.length ? 'No subject matches “' + esc(railFilterEl.value.trim()) + '”.' : 'No subjects with a count on this date.') +
+      '</li>';
 
     if (state.summary) {
       railSummaryEl.textContent = state.summary.final + '/' + state.summary.subjects + ' done';
@@ -142,7 +190,8 @@
       unplannedWrap.hidden = false;
       unplannedToggle.textContent = 'Not in Count (campus) — ' + unplanned.length + ' subject' +
         (unplanned.length === 1 ? '' : 's');
-      unplannedEl.innerHTML = unplanned.map(railItem).join('');
+      unplannedEl.innerHTML = groupHtml(unplanned, 'u:', bySubcode);
+      if (railQuery() && unplannedEl.querySelector('.rail-item')) unplannedEl.hidden = false;
     } else {
       unplannedWrap.hidden = true;
       unplannedEl.innerHTML = '';
@@ -154,12 +203,54 @@
   });
 
   function onRailClick(e) {
+    var head = e.target.closest('.rail-group-head');
+    if (head) {
+      var li = head.parentNode;
+      li.classList.toggle('closed');
+      if (li.classList.contains('closed')) closedGroups[head.dataset.group] = 1;
+      else delete closedGroups[head.dataset.group];
+      try { localStorage.setItem('qp.closedGroups', JSON.stringify(closedGroups)); } catch (e2) { /* ignore */ }
+      return;
+    }
     var btn = e.target.closest('.rail-item');
     if (!btn) return;
     selectSubject(btn.dataset.sub);
   }
   railEl.addEventListener('click', onRailClick);
   unplannedEl.addEventListener('click', onRailClick);
+
+  /* ---------------- rail filter ---------------- */
+
+  railFilterEl.addEventListener('input', renderRail);
+
+  railFilterEl.addEventListener('keydown', function (e) {
+    var items = document.querySelectorAll('#rail .rail-item, #unplanned .rail-item');
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (!items.length) return;
+      var sub = items[0].dataset.sub;
+      railFilterEl.value = '';
+      selectSubject(sub);
+    } else if (e.key === 'Escape') {
+      railFilterEl.value = '';
+      renderRail();
+    } else if (e.key === 'ArrowDown' && items.length) {
+      e.preventDefault();
+      items[0].focus();
+    }
+  });
+
+  // Up/Down walk the visible subjects once focus is in the rail.
+  document.querySelector('#rail').parentNode.addEventListener('keydown', function (e) {
+    if (!e.target.classList.contains('rail-item')) return;
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    var items = Array.prototype.slice.call(document.querySelectorAll('#rail .rail-item, #unplanned:not([hidden]) .rail-item'))
+      .filter(function (el) { return el.offsetParent !== null; });
+    var i = items.indexOf(e.target);
+    e.preventDefault();
+    if (e.key === 'ArrowDown' && items[i + 1]) items[i + 1].focus();
+    else if (e.key === 'ArrowUp') (items[i - 1] || railFilterEl).focus();
+  });
 
   /* ---------------- grid ---------------- */
 
@@ -196,6 +287,8 @@
     var p = state.payload;
     var k = state.current;
     ctxCode.textContent = k.subcode;
+    var info = state.subjects.filter(function (s) { return s.subcode === k.subcode; })[0];
+    ctxName.textContent = info ? info.subtitle : '';
     ctxDept.textContent = k.dept || '—';
     ctxSem.textContent = k.sem || '—';
     ctxMeta.textContent = k.doe;
@@ -236,17 +329,22 @@
   function renderCopySources() {
     var s = state.payload.sources || [];
     function opt(x, withDate) {
+      var name = x.subtitle ? ' — ' + (x.subtitle.length > 32 ? x.subtitle.slice(0, 31) + '…' : x.subtitle) : '';
       return '<option value="' + esc(x.subcode + '|' + x.dept + '|' + x.sem + '|' + x.doe) + '">' +
-             esc(x.subcode) + ' (' + x.rooms + ' rooms' + (withDate ? ', ' + esc(x.doe) : '') + ')</option>';
+             esc(x.subcode + name) + ' (' + x.rooms + ' rooms' + (withDate ? ', ' + esc(x.doe) : '') + ')</option>';
     }
-    // Same date first, then other exam days -- a subject often reuses its rooms
-    // across dates, which is when copying helps most.
+    // Same date first (one group per dept), then other exam days -- a subject often
+    // reuses its rooms across dates, which is when copying helps most.
     var same = s.filter(function (x) { return !x.other; });
     var other = s.filter(function (x) { return x.other; });
     var html = '<option value="">Copy rooms from…</option>';
-    if (same.length) {
-      html += '<optgroup label="This date">' + same.map(function (x) { return opt(x, false); }).join('') + '</optgroup>';
-    }
+    var depts = [];
+    same.forEach(function (x) { if (depts.indexOf(x.dept) === -1) depts.push(x.dept); });
+    depts.sort().forEach(function (d) {
+      html += '<optgroup label="This date · ' + esc(d) + '">' +
+              same.filter(function (x) { return x.dept === d; }).map(function (x) { return opt(x, false); }).join('') +
+              '</optgroup>';
+    });
     if (other.length) {
       html += '<optgroup label="Other dates">' + other.map(function (x) { return opt(x, true); }).join('') + '</optgroup>';
     }
@@ -332,6 +430,8 @@
         say('');
         problemsEl.hidden = true;
         apply(d);
+        var active = document.querySelector('.rail-item.active');
+        if (active) active.scrollIntoView({ block: 'nearest' });
         history.replaceState(null, '', '/qp?date=' + encodeURIComponent(state.date) +
                                       '&sub=' + encodeURIComponent(subcode));
       })
@@ -341,8 +441,12 @@
   /** First subject still needing work, for the initial landing and after finalise. */
   function firstUnfinished() {
     var planned = state.subjects.filter(function (s) { return s.req_total != null; });
+    // Stay in the current dept/sem group while it still has work.
+    var cur = state.current ? groupKey(state.current) : null;
+    function away(s) { return cur && groupKey(s) !== cur ? 1 : 0; }
     planned.sort(function (a, b) {
-      return railRank(a) - railRank(b) || (a.subcode < b.subcode ? -1 : 1);
+      return railRank(a) - railRank(b) || away(a) - away(b) ||
+             groupKey(a).localeCompare(groupKey(b)) || bySubcode(a, b);
     });
     return planned.length ? planned[0] : null;
   }
@@ -593,6 +697,9 @@
 
   document.addEventListener('keydown', function (e) {
     if (e.key === 'F4') { e.preventDefault(); doFillMax(); }
+    else if (e.key === '/' && !/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) {
+      e.preventDefault(); railFilterEl.focus(); railFilterEl.select();
+    }
     else if (e.key === 'Enter' && e.ctrlKey && state.current && !finaliseBtn.disabled) {
       e.preventDefault(); finalise(false);
     }

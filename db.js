@@ -699,6 +699,7 @@ function subjectsForDate(doe) {
     SELECT s.subcode,
            TRIM(s.dept)                  AS dept,
            COALESCE(s.semester,'')       AS sem,
+           COALESCE(TRIM(s.subtitle),'') AS subtitle,
            s.sessn,
            s.doe,
            c.reg, c.arr,
@@ -859,6 +860,8 @@ function clearSubject(k) {
 function copySources(k) {
   return db.prepare(`
     SELECT subcode, dept, sem, doe,
+           (SELECT TRIM(c.subtitle) FROM subjects_cache c
+             WHERE c.subcode = qp_rooms.subcode LIMIT 1) AS subtitle,
            COUNT(*)                              AS rooms,
            COALESCE(SUM(qty),0)                  AS allotted,
            CASE WHEN doe = @doe THEN 0 ELSE 1 END AS other,
