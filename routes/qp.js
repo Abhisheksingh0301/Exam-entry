@@ -74,16 +74,26 @@ router.get('/qp/progress', function (req, res) {
   });
 });
 
-/* Finalised rows: review, then export to dbo.room. */
+/* Back to the Finalised page with the same date / dept filter. */
+function finalUrl(src) {
+  return '/qp/final?date=' + encodeURIComponent((src.date || '').trim()) +
+         '&dept=' + encodeURIComponent((src.dept || '').trim());
+}
+
+/* Finalised rows: review, then export to dbo.room. Filter by date and/or dept. */
 router.get('/qp/final', function (req, res) {
   var date = (req.query.date || '').trim();
+  var dept = (req.query.dept || '').trim();
   res.render('qpfinal', {
     title: 'Finalised Allotment',
     session: data.currentSession(),
     date: date,
+    dept: dept,
     dates: qp.examDates(),
-    rows: qp.finalisedRows(date),
-    pending: qp.pendingExport(date),
+    depts: qp.finalisedDepts(),
+    rows: qp.finalisedRows(date, dept),
+    pending: qp.pendingExport(date, dept),
+    editing: qp.editingExported(date, dept),
     flash: req.query.msg || null,
     flashType: req.query.type || 'info'
   });
@@ -173,8 +183,9 @@ router.get('/qp/artsreport', function (req, res) {
 /* Push finalised subjects to dbo.room (delete-then-insert per subject). */
 router.post('/qp/export', function (req, res) {
   var date = (req.body.date || '').trim();
-  var back = '/qp/final?date=' + encodeURIComponent(date);
-  qp.exportToSqlServer(date || null)
+  var dept = (req.body.dept || '').trim();
+  var back = finalUrl(req.body);
+  qp.exportToSqlServer(date || null, dept || null)
     .then(function (r) {
       var msg = r.total === 0
         ? 'Nothing to export — no finalised subject is waiting.'
@@ -187,10 +198,61 @@ router.post('/qp/export', function (req, res) {
     });
 });
 
+/* Edit a finalised/exported subject: unlock it and open it on the entry screen.
+   Re-finalising puts it back in the export list; the export then replaces its
+   rows in dbo.room. */
+router.post('/qp/final/edit', function (req, res) {
+  var k = key(req);
+  if (!k) return res.redirect(finalUrl(req.body) + '&type=error&msg=' + encodeURIComponent('Unknown subject/date.'));
+  qp.unlock(k);
+  res.redirect('/qp?date=' + encodeURIComponent(k.doe) + '&sub=' + encodeURIComponent(k.subcode));
+});
+
+/* Delete a subject's allotment from dbo.room (if exported) and from SQLite. */
+router.post('/qp/final/delete', function (req, res) {
+  var k = key(req);
+  var back = finalUrl(req.body);
+  if (!k) return res.redirect(back + '&type=error&msg=' + encodeURIComponent('Unknown subject/date.'));
+  qp.deleteSubject(k)
+    .then(function (r) {
+      var msg = 'Deleted ' + k.subcode + ' (' + k.doe + '): ' + r.local + ' local row(s)' +
+                (r.remote == null ? ', not in SQL Server.' : ', ' + r.remote + ' row(s) from dbo.room.');
+      res.redirect(back + '&type=success&msg=' + encodeURIComponent(msg));
+    })
+    .catch(function (err) {
+      res.redirect(back + '&type=error&msg=' +
+                   encodeURIComponent('Delete failed, nothing removed: ' + err.message));
+    });
+});
+
+/* Delete everything shown for a date and/or dept, from dbo.room and SQLite. */
+router.post('/qp/final/delete-bulk', function (req, res) {
+  var date = (req.body.date || '').trim();
+  var dept = (req.body.dept || '').trim();
+  var back = finalUrl(req.body);
+  if (!date && !dept) {
+    return res.redirect(back + '&type=error&msg=' + encodeURIComponent('Pick a date or a dept to delete.'));
+  }
+  qp.deleteSubjects(date || null, dept || null)
+    .then(function (r) {
+      var msg = r.total === 0
+        ? 'Nothing to delete for this selection.'
+        : 'Deleted ' + r.subjects + ' of ' + r.total + ' subject(s): ' + r.local + ' local row(s), ' +
+          r.remote + ' row(s) from dbo.room' +
+          (r.failed ? '. ' + r.failed + ' failed (left as they were): ' + r.errors[0] : '.');
+      res.redirect(back + '&type=' + (r.failed ? 'error' : 'success') + '&msg=' + encodeURIComponent(msg));
+    })
+    .catch(function (err) {
+      res.redirect(back + '&type=error&msg=' +
+                   encodeURIComponent('Delete failed, nothing removed: ' + err.message));
+    });
+});
+
 /* Same data as CSV. */
 router.get('/qp/final.csv', function (req, res) {
   var date = (req.query.date || '').trim();
-  var rows = qp.finalisedRows(date);
+  var dept = (req.query.dept || '').trim();
+  var rows = qp.finalisedRows(date, dept);
   var out = ['SESSN,SUBCODE,DEPT,SEM,ROOMNO,QTY'];
   rows.forEach(function (r) {
     out.push([r.SESSN, r.SUBCODE, r.DEPT, r.SEM, r.ROOMNO, r.QTY].map(function (v) {
@@ -200,7 +262,8 @@ router.get('/qp/final.csv', function (req, res) {
   });
   res.type('text/csv');
   res.setHeader('Content-Disposition',
-    'attachment; filename="qp_allotment' + (date ? '_' + date : '') + '.csv"');
+    'attachment; filename="qp_allotment' + (date ? '_' + date : '') +
+    (dept ? '_' + dept.replace(/[^A-Za-z0-9]+/g, '') : '') + '.csv"');
   res.send(out.join('\r\n'));
 });
 

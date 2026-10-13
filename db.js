@@ -1075,19 +1075,46 @@ const IN_CURRENT_SESSION = `
            WHERE c.sessn = s.sessn AND c.subcode = s.subcode AND c.doe = s.doe)`;
 
 /** Column-for-column with dbo.room. Nothing here is pushed automatically. */
-function finalisedRows(doe) {
+function finalisedRows(doe, dept) {
   return db.prepare(`
     SELECT q.sessn AS SESSN, q.subcode AS SUBCODE, q.dept AS DEPT,
            q.sem   AS SEM,   q.roomno  AS ROOMNO,  q.qty AS QTY,
-           s.status, s.doe, s.finalised_on
+           s.status, s.doe, s.finalised_on, s.exported_on
       FROM qp_rooms q
       JOIN qp_subjects s ON s.sessn=q.sessn AND s.subcode=q.subcode
                         AND s.dept=q.dept  AND s.sem=q.sem
      WHERE s.status IN ('final','exported')
        AND ${IN_CURRENT_SESSION}
        AND (@doe IS NULL OR s.doe = @doe)
-     ORDER BY s.doe, q.subcode, q.id
-  `).all({ doe: doe || null });
+       AND (@dept IS NULL OR s.dept = @dept)
+     ORDER BY s.doe, q.subcode, q.dept, q.sem, q.id
+  `).all({ doe: doe || null, dept: dept || null });
+}
+
+/**
+ * Exported subjects that were unlocked for editing and not yet finalised again.
+ * dbo.room still holds their old rows until they are re-finalised and exported.
+ */
+function editingExported(doe, dept) {
+  return db.prepare(`
+    SELECT s.subcode, s.dept, s.sem, s.doe, s.exported_on
+      FROM qp_subjects s
+     WHERE s.status = 'draft' AND s.exported_on IS NOT NULL
+       AND ${IN_CURRENT_SESSION}
+       AND (@doe IS NULL OR s.doe = @doe)
+       AND (@dept IS NULL OR s.dept = @dept)
+     ORDER BY s.doe, s.subcode
+  `).all({ doe: doe || null, dept: dept || null });
+}
+
+/** Departments that have a finalised (or exported) subject this session. */
+function finalisedDepts() {
+  return db.prepare(`
+    SELECT DISTINCT s.dept FROM qp_subjects s
+     WHERE (s.status IN ('final','exported') OR s.exported_on IS NOT NULL)
+       AND ${IN_CURRENT_SESSION}
+     ORDER BY s.dept
+  `).all().map(function (r) { return r.dept; });
 }
 
 /** Header counters for a date. */
@@ -1183,9 +1210,9 @@ function lastActivity() {
  * Finalised subjects not yet pushed to SQL Server. Unlocking + re-finalising a
  * subject puts it back in this list, so a correction is exported again.
  */
-function pendingExport(doe) {
+function pendingExport(doe, dept) {
   return db.prepare(`
-    SELECT s.sessn, s.subcode, s.dept, s.sem, s.doe,
+    SELECT s.sessn, s.subcode, s.dept, s.sem, s.doe, s.exported_on,
            COUNT(q.id)            AS rooms,
            COALESCE(SUM(q.qty),0) AS qty
       FROM qp_subjects s
@@ -1194,9 +1221,10 @@ function pendingExport(doe) {
      WHERE s.status = 'final'
        AND ${IN_CURRENT_SESSION}
        AND (@doe IS NULL OR s.doe = @doe)
+       AND (@dept IS NULL OR s.dept = @dept)
      GROUP BY s.sessn, s.subcode, s.dept, s.sem, s.doe
      ORDER BY s.doe, s.subcode
-  `).all({ doe: doe || null });
+  `).all({ doe: doe || null, dept: dept || null });
 }
 
 /**
@@ -1209,8 +1237,8 @@ function pendingExport(doe) {
  * that were deleted locally after a correction. A subject that fails rolls back on
  * its own and stays 'final', so the next run retries just that one.
  */
-async function exportQpToSqlServer(doe) {
-  const subjects = pendingExport(doe);
+async function exportQpToSqlServer(doe, dept) {
+  const subjects = pendingExport(doe, dept);
   if (!subjects.length) {
     return { total: 0, subjects: 0, rows: 0, failed: 0, errors: [] };
   }
@@ -1272,6 +1300,90 @@ async function exportQpToSqlServer(doe) {
   }
 
   return { total: subjects.length, subjects: done, rows: pushed, failed: failed, errors: errors };
+}
+
+/**
+ * Delete a subject's allotment from both databases.
+ *
+ * If it was ever exported (exported_on is kept through unlock), its rows are
+ * removed from dbo.room first -- same WHERE as the export. Only when that
+ * succeeds are the local qp_rooms / qp_subjects rows removed, so a SQL Server
+ * failure leaves everything as it was.
+ */
+async function deleteQpSubject(k, sharedPool) {
+  const state = subjectState(k);
+  let remote = null;
+
+  if (state.exported_on) {
+    const pool = sharedPool || await sql.connect(mssqlConfig());
+    try {
+      const r = await pool.request()
+        .input('sessn', sql.VarChar(50), k.sessn)
+        .input('subcode', sql.NVarChar(LIMITS.subcode), k.subcode)
+        .input('dept', sql.NVarChar(50), k.dept)
+        .input('sem', sql.NVarChar(5), k.sem)
+        .query(`DELETE FROM dbo.room
+                 WHERE SESSN=@sessn AND SUBCODE=@subcode AND DEPT=@dept AND SEM=@sem`);
+      remote = r.rowsAffected[0];
+    } finally {
+      if (!sharedPool) await pool.close();
+    }
+  }
+
+  const removeLocal = db.transaction(function () {
+    const rows = db.prepare(
+      'DELETE FROM qp_rooms WHERE sessn=@sessn AND subcode=@subcode AND dept=@dept AND sem=@sem'
+    ).run(k).changes;
+    db.prepare(
+      'DELETE FROM qp_subjects WHERE sessn=@sessn AND subcode=@subcode AND dept=@dept AND sem=@sem'
+    ).run(k);
+    return rows;
+  });
+
+  return { local: removeLocal(), remote: remote };
+}
+
+/**
+ * Delete every finalised / exported subject matching a date and/or dept (at
+ * least one is required -- never the whole session by accident). Exported
+ * subjects that are unlocked for editing are included, since dbo.room still has
+ * their rows. Each subject goes through deleteQpSubject on its own, so one
+ * failure leaves that subject intact and the rest still go.
+ */
+async function deleteQpSubjects(doe, dept) {
+  if (!doe && !dept) throw new Error('Pick a date or a dept to delete.');
+  const subjects = db.prepare(`
+    SELECT s.sessn, s.subcode, s.dept, s.sem, s.doe, s.exported_on
+      FROM qp_subjects s
+     WHERE (s.status IN ('final','exported') OR s.exported_on IS NOT NULL)
+       AND ${IN_CURRENT_SESSION}
+       AND (@doe IS NULL OR s.doe = @doe)
+       AND (@dept IS NULL OR s.dept = @dept)
+     ORDER BY s.doe, s.subcode
+  `).all({ doe: doe || null, dept: dept || null });
+
+  const out = { total: subjects.length, subjects: 0, local: 0, remote: 0, failed: 0, errors: [] };
+  if (!subjects.length) return out;
+
+  const needsServer = subjects.some(function (s) { return s.exported_on; });
+  const pool = needsServer ? await sql.connect(mssqlConfig()) : null;
+  try {
+    for (const s of subjects) {
+      try {
+        const r = await deleteQpSubject(
+          { sessn: s.sessn, subcode: s.subcode, dept: s.dept, sem: s.sem, doe: s.doe }, pool);
+        out.subjects++;
+        out.local += r.local;
+        out.remote += r.remote || 0;
+      } catch (e) {
+        out.failed++;
+        out.errors.push(s.subcode + ' (' + s.doe + '): ' + e.message);
+      }
+    }
+  } finally {
+    if (pool) await pool.close();
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1497,7 +1609,11 @@ module.exports = {
     finalise,
     finaliseAll,
     unlock,
+    deleteSubject: deleteQpSubject,
+    deleteSubjects: deleteQpSubjects,
+    finalisedDepts,
     finalisedRows,
+    editingExported,
     dateSummary,
     dateProgress,
     orphanEntries,

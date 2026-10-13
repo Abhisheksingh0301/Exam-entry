@@ -23,12 +23,14 @@
     </div>
     <div class="flex gap-2.5">
       <a href="/qp?date=<%= date %>" class="border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer bg-white/15 text-white no-underline">&larr; Back to entry</a>
-      <a href="/qp/final.csv?date=<%= date %>" class="border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer bg-white/15 text-white no-underline">Download CSV</a>
+      <a href="/qp/final.csv?date=<%= encodeURIComponent(date) %>&dept=<%= encodeURIComponent(dept) %>" class="border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer bg-white/15 text-white no-underline">Download CSV</a>
       <% var confirmMsg = 'Export ' + pending.length + ' subject(s) to dbo.room?\\n\\nFor each subject this DELETEs its existing rows in dbo.room (matched on SESSN + SUBCODE + DEPT + SEM) and inserts the finalised set.'; %>
       <form method="post" action="/qp/export" class="m-0" onsubmit="return confirm('<%= confirmMsg %>');">
         <input type="hidden" name="date" value="<%= date %>" />
+        <input type="hidden" name="dept" value="<%= dept %>" />
         <button type="submit" class="border-0 rounded-md px-3.5 py-2.25 text-[.85rem] font-semibold cursor-pointer bg-[#2e7d32] text-white disabled:bg-[#93b795] disabled:cursor-not-allowed" <%= pending.length ? '' : 'disabled' %>>
-          Export to SQL Server<%= pending.length ? ' (' + pending.length + ')' : '' %>
+          <% var updates = pending.filter(function (p) { return p.exported_on; }).length; %>
+          <%= updates ? 'Export / update' : 'Export to SQL Server' %><%= pending.length ? ' (' + pending.length + ')' : '' %>
         </button>
       </form>
     </div>
@@ -36,6 +38,14 @@
 
   <% if (flash) { var fc = flashType === 'success' ? 'bg-[#e4f6e6] text-[#1e6b26]' : flashType === 'error' ? 'bg-[#fbe6e6] text-[#9a2626]' : 'bg-[#e7f0fb] text-[#24476f]'; %>
     <div class="mx-5.5 mt-3.5 px-3.5 py-2.5 rounded-md text-[.88rem] <%= fc %>"><%= flash %></div>
+  <% } %>
+
+  <% if (editing.length) { %>
+    <div class="mx-5.5 mt-3.5 px-3.5 py-2.5 rounded-md text-[.88rem] bg-[#fff1d6] text-[#8a5a00]">
+      <strong><%= editing.length %></strong> exported subject(s) unlocked for editing:
+      <% editing.forEach(function (e, i) { %><a class="font-semibold text-[#8a5a00]" href="/qp?date=<%= encodeURIComponent(e.doe) %>&sub=<%= encodeURIComponent(e.subcode) %>"><%= e.subcode %></a><%= i < editing.length - 1 ? ', ' : '' %><% }); %>.
+      <code>dbo.room</code> keeps their old rows until they are finalised again and exported.
+    </div>
   <% } %>
 
   <main class="px-5.5 py-4.5">
@@ -48,11 +58,41 @@
             <option value="<%= d.doe %>" <%= d.doe === date ? 'selected' : '' %>><%= d.doe %></option>
           <% }); %>
         </select>
+        <label class="text-[.78rem] font-semibold text-[#3a4658]">Dept</label>
+        <select name="dept" class="px-2.5 py-2 border border-[#c7d0dc] rounded-md text-[.9rem] bg-white">
+          <option value="">All depts</option>
+          <% depts.forEach(function (d) { %>
+            <option value="<%= d %>" <%= d === dept ? 'selected' : '' %>><%= d %></option>
+          <% }); %>
+        </select>
         <button class="border border-[#c7d0dc] bg-white rounded-md px-2.5 py-1.5 text-[.78rem] font-semibold text-[#24476f] cursor-pointer hover:bg-[#f1f4f8]" type="submit">Show</button>
         <span class="text-[.8rem] text-slate-500 ml-auto">
           <b class="text-[#1f3a5f]"><%= rows.length %></b> row(s) &middot;
           <b class="text-[#1f3a5f]"><%= rows.reduce(function (s, r) { return s + r.QTY; }, 0) %></b> QP
         </span>
+        <% var shownSubs = {};
+           rows.forEach(function (r) { shownSubs[[r.doe, r.SUBCODE, r.DEPT, r.SEM].join('|')] = r.exported_on; });
+           editing.forEach(function (e) { shownSubs[[e.doe, e.subcode, e.dept, e.sem].join('|')] = e.exported_on; });
+           var shownKeys = Object.keys(shownSubs);
+           var shownExported = shownKeys.filter(function (k) { return shownSubs[k]; }).length;
+           var canBulk = (date || dept) && shownKeys.length;
+           var bulkMsg = 'Delete ALL ' + shownKeys.length + ' subject(s) shown' +
+                         ' (date: ' + (date || 'all') + ', dept: ' + (dept || 'all') + ')?\n\n' +
+                         rows.length + ' room row(s) will be removed from the local database' +
+                         (shownExported ? ', and ' + shownExported + ' exported subject(s) from dbo.room in SQL Server' : '') +
+                         (editing.length ? '.\nIncludes ' + editing.length + ' exported subject(s) currently unlocked for editing' : '') +
+                         '.\n\nThis cannot be undone.'; %>
+        <%# Own form with the APPLIED filter, so changing a dropdown without Show can't widen the delete. %>
+        <button type="submit" form="bulkDelForm"
+                data-msg="<%= bulkMsg %>" onclick="return confirm(this.dataset.msg);"
+                class="border border-[#c7d0dc] bg-white rounded-md px-2.5 py-1.5 text-[.78rem] font-semibold text-[#9a2626] cursor-pointer hover:bg-[#fbe6e6] disabled:opacity-50 disabled:cursor-not-allowed"
+                title="<%= canBulk ? '' : 'Pick a date or a dept first' %>" <%= canBulk ? '' : 'disabled' %>>
+          Delete shown<%= canBulk ? ' (' + shownKeys.length + ')' : '' %>
+        </button>
+      </form>
+      <form id="bulkDelForm" method="post" action="/qp/final/delete-bulk" class="hidden">
+        <input type="hidden" name="date" value="<%= date %>" />
+        <input type="hidden" name="dept" value="<%= dept %>" />
       </form>
 
       <% if (!rows.length) { %>
@@ -61,11 +101,15 @@
       <div class="overflow-x-auto">
         <table>
           <thead>
-            <tr><th>#</th><th>DOE</th><th>SESSN</th><th>SUBCODE</th><th>DEPT</th><th>SEM</th><th>ROOMNO</th><th class="text-right">QTY</th><th>Status</th><th>Finalised</th></tr>
+            <tr><th>#</th><th>DOE</th><th>SESSN</th><th>SUBCODE</th><th>DEPT</th><th>SEM</th><th>ROOMNO</th><th class="text-right">QTY</th><th>Status</th><th>Finalised</th><th>Actions</th></tr>
           </thead>
           <tbody>
-            <% rows.forEach(function (r, i) { %>
-              <tr>
+            <% var subKey = function (r) { return [r.doe, r.SUBCODE, r.DEPT, r.SEM].join('|'); };
+               var span = {};
+               rows.forEach(function (r) { var k = subKey(r); span[k] = (span[k] || 0) + 1; });
+               var btn = 'border border-[#c7d0dc] bg-white rounded-md px-2.5 py-1 text-[.75rem] font-semibold cursor-pointer hover:bg-[#f1f4f8]'; %>
+            <% rows.forEach(function (r, i) { var k = subKey(r); var first = i === 0 || subKey(rows[i - 1]) !== k; %>
+              <tr<%- first && i > 0 ? ' class="border-t-2 border-[#c7d0dc]"' : '' %>>
                 <td class="text-slate-400"><%= i + 1 %></td>
                 <td><%= r.doe %></td>
                 <td><%= r.SESSN %></td>
@@ -74,8 +118,33 @@
                 <td><%= r.SEM %></td>
                 <td><%= r.ROOMNO %></td>
                 <td class="text-right tabular-nums"><%= r.QTY %></td>
-                <td><% if (r.status === 'exported') { %><span class="tag ok">exported</span><% } else { %><span class="tag pend">to export</span><% } %></td>
+                <td><% if (r.status === 'exported') { %><span class="tag ok">exported</span><% } else if (r.exported_on) { %><span class="tag pend">changed, to update</span><% } else { %><span class="tag pend">to export</span><% } %></td>
                 <td class="text-slate-500"><%= r.finalised_on || '—' %></td>
+                <% if (first) {
+                     var n = span[k];
+                     var qty = rows.filter(function (x) { return subKey(x) === k; }).reduce(function (s, x) { return s + x.QTY; }, 0);
+                     var delMsg = 'Delete ' + r.SUBCODE + ' (' + r.DEPT + ' ' + r.SEM + ', ' + r.doe + ')?\n\n' +
+                                  n + ' room row(s), ' + qty + ' QP will be removed from the local database' +
+                                  (r.exported_on ? ' AND from dbo.room in SQL Server' : '') + '.\nThis cannot be undone.';
+                     var editMsg = 'Unlock ' + r.SUBCODE + ' for editing?' +
+                                   (r.exported_on ? '\n\ndbo.room keeps the old rows until you finalise it again and export.' : ''); %>
+                  <td rowspan="<%= n %>" class="align-top whitespace-nowrap">
+                    <form method="post" action="/qp/final/edit" class="inline m-0" data-msg="<%= editMsg %>" onsubmit="return confirm(this.dataset.msg);">
+                      <input type="hidden" name="subcode" value="<%= r.SUBCODE %>" />
+                      <input type="hidden" name="doe" value="<%= r.doe %>" />
+                      <input type="hidden" name="date" value="<%= date %>" />
+                      <input type="hidden" name="dept" value="<%= dept %>" />
+                      <button type="submit" class="<%= btn %> text-[#24476f]">Edit</button>
+                    </form>
+                    <form method="post" action="/qp/final/delete" class="inline m-0" data-msg="<%= delMsg %>" onsubmit="return confirm(this.dataset.msg);">
+                      <input type="hidden" name="subcode" value="<%= r.SUBCODE %>" />
+                      <input type="hidden" name="doe" value="<%= r.doe %>" />
+                      <input type="hidden" name="date" value="<%= date %>" />
+                      <input type="hidden" name="dept" value="<%= dept %>" />
+                      <button type="submit" class="<%= btn %> text-[#9a2626]">Delete</button>
+                    </form>
+                  </td>
+                <% } %>
               </tr>
             <% }); %>
           </tbody>
