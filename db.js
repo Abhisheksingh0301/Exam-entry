@@ -965,7 +965,7 @@ function checks(k) {
   } else {
     const allotted = rows.reduce(function (s, r) { return s + r.qty; }, 0);
     if (allotted < req.total) {
-      err('Short by ' + (req.total - allotted) + ' QP — allotted ' + allotted +
+      warn('Short by ' + (req.total - allotted) + ' QP — allotted ' + allotted +
           ' against ' + req.total + ' required.');
     } else if (req.total > 0 && allotted - req.total > 25 && allotted > req.total * 1.25) {
       warn('Over-allotted by ' + (allotted - req.total) + ' QP (' +
